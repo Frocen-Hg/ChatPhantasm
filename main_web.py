@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles # 新增：用于托管静态文件
 from fastapi.responses import FileResponse # 新增：用于返回 HTML
 from pydantic import BaseModel
-from chat_engine import PhantasmChat
+from core import PhantasmChat
 import uvicorn
 from threading import Timer # 新增：用于延迟打开浏览器
 from fastapi.staticfiles import StaticFiles
@@ -12,13 +12,8 @@ from fastapi.responses import StreamingResponse
 import json
 
 # --- FastAPI 应用初始化 ---
-
-
 app = FastAPI(title="Phantasm Terminal")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-
+app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
 # --- 1. 初始化引擎 ---
 chat_engine = PhantasmChat()
@@ -39,7 +34,7 @@ async def chat_endpoint(msg: ChatMessage):
 # 假设你的 index.html 就在当前目录下
 @app.get("/")
 async def read_index():
-    return FileResponse('index.html')
+    return FileResponse('web/index.html')
 
 # 如果你以后有图片文件夹 assets，可以这样挂载：
 # app.mount("/assets", StaticFiles(directory="assets"), name="assets")

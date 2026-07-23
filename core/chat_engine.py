@@ -1,8 +1,8 @@
 import os    # 必须导入
 import json  # 必须导入
 from openai import OpenAI
-from config import DEEPSEEK_API_KEY, BASE_URL, CONFIG
-from logger import ChatLogger
+from .config import DEEPSEEK_API_KEY, BASE_URL, CONFIG
+from .logger import ChatLogger
 
 class PhantasmChat:
     def __init__(self):

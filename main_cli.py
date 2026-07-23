@@ -1,5 +1,5 @@
-from chat_engine import PhantasmChat
-from ui import TerminalUI
+from core import PhantasmChat
+from cli import TerminalUI
 
 def main():
     chat = PhantasmChat()
