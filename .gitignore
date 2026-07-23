@@ -1,0 +1,47 @@
+# === 虚拟环境 ===
+.venv/
+venv/
+
+# === Python 缓存 ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === 密钥 & 环境变量 ===
+.env
+*.pem
+*.key
+
+# === 构建产物 ===
+build/
+dist/
+*.spec
+
+# === 日志（含个人隐私） ===
+logs/
+*.log
+*.jsonl
+
+# === 临时文件 ===
+temp-stream/
+* copy.*
+
+# === 本地配置 ===
+config.json
+
+# === 系统文件 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+build/
+dist/
+*.spec
+
+logs/
+*.jsonl
+*.log
+
+temp-stream/
+* copy.*
+config.json

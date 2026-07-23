@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phantasm Terminal - 影子</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        body { background-color: #0d0d0d; color: #e0e0e0; }
+        .glass-panel { background: rgba(30, 30, 30, 0.7); backdrop-filter: blur(10px); }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #4b0082; border-radius: 10px; }
+    </style>
+</head>
+<body class="h-screen flex flex-col font-sans">
+
+    <div id="app" class="flex flex-col h-full max-w-4xl mx-auto w-full p-4">
+        <header class="flex justify-between items-center py-4 border-b border-purple-900/50">
+            <h1 class="text-2xl font-bold text-purple-500 tracking-tighter">PHANTASM v1.2</h1>
+            <div class="text-xs text-gray-500">BACKEND: ONLINE</div>
+        </header>
+
+        <main class="flex-1 overflow-y-auto my-4 space-y-4 pr-2" id="chat-box">
+            <div v-for="(msg, index) in history" :key="index" class="flex flex-col">
+                <div v-if="msg.role === 'user'" class="self-end max-w-[80%]">
+                    <div class="bg-purple-700 text-white px-4 py-2 rounded-2xl rounded-tr-none shadow-lg shadow-purple-900/20">
+                        {{ msg.content }}
+                    </div>
+                </div>
+                <div v-if="msg.role === 'assistant'" class="self-start max-w-[80%] flex items-start gap-2">
+                    <img 
+                        src="/static/avatar_shadow.jpg" 
+                        alt="影子"
+                        class="w-8 h-8 rounded-full object-cover border border-purple-500/50 flex-shrink-0"
+                    >       
+                    <div class="bg-gray-800 border border-purple-900/30 px-4 py-2 rounded-2xl rounded-tl-none text-gray-200">
+                        {{ msg.content }}
+                    </div>
+                </div>
+            </div>
+            <div v-if="loading" class="self-start text-xs text-purple-400 animate-pulse">影子正在组织语言...</div>
+        </main>
+
+        <footer class="py-4">
+            <div class="relative flex items-center">
+                <input 
+                    v-model="userInput" 
+                    @keyup.enter="sendMessage"
+                    placeholder="给影子发点什么..." 
+                    class="w-full bg-gray-900 border border-purple-900/50 rounded-full px-6 py-3 focus:outline-none focus:border-purple-500 transition-all text-sm"
+                >
+                <button @click="sendMessage" class="absolute right-2 p-2 bg-purple-600 rounded-full hover:bg-purple-500 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        const { createApp, ref, onUpdated } = Vue;
+
+        createApp({
+            setup() {
+                const userInput = ref('');
+                const history = ref([]);
+                const loading = ref(false);
+
+                const scrollToBottom = () => {
+                    const box = document.getElementById('chat-box');
+                    if (box) box.scrollTop = box.scrollHeight;
+                };
+
+                onUpdated(scrollToBottom);
+
+                const sendMessage = async () => {
+                    if (!userInput.value.trim() || loading.value) return;
+
+                    const text = userInput.value;
+                    history.value.push({ role: 'user', content: text });
+                    userInput.value = '';
+                    loading.value = true;
+
+                    try {
+                        const response = await fetch('http://127.0.0.1:8000/chat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ content: text })
+                        });
+                        const data = await response.json();
+                        history.value.push(data);
+                    } catch (e) {
+                        history.value.push({ role: 'assistant', content: '（系统崩溃音）连接断开了，指挥官...' });
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                return { userInput, history, loading, sendMessage };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+python环境采用3.11.9
+激活虚拟环境流程
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+.venv\Scripts\Activate.ps1
