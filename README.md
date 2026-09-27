@@ -68,6 +68,9 @@ docker compose up --build
 | PUT | /characters/{id} | 更新角色卡 |
 | DELETE | /characters/{id} | 删除角色卡 |
 | POST | /chat | 流式聊天（text/plain，响应头 X-Conversation-Id 为会话 id） |
+| GET | /conversations?character_id= | 会话列表（含消息数/最后消息预览） |
+| GET | /conversations/{id}/messages | 会话消息列表 |
+| DELETE | /conversations/{id} | 删除会话（含消息） |
 | GET | /providers | Provider 列表 |
 | POST | /providers | 新增 Provider |
 | POST | /providers/test | 连通性测试 |

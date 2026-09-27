@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from .api.v1.router import api_router
 from .config import ROOT_DIR, settings
@@ -39,7 +39,14 @@ async def no_cache_html(request, call_next):
         response.headers["Cache-Control"] = "no-store"
     return response
 
-# 生产模式：若存在前端构建产物则托管（frontend/dist）
+# 生产模式：若存在前端构建产物则托管（frontend/dist），含 SPA history 回退
 frontend_dist = ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(request: Request, full_path: str):
+        dist = frontend_dist.resolve()
+        target = (dist / full_path).resolve()
+        if full_path and target.is_file() and target.is_relative_to(dist):
+            return FileResponse(target)
+        return FileResponse(dist / "index.html")
