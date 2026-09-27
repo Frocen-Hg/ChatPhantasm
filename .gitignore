@@ -12,12 +12,15 @@ __pycache__/
 *.pem
 *.key
 
-# === 构建产物 ===
-build/
-dist/
-*.spec
+# === 数据库 ===
+data.db
+*.db
 
-# === 日志（含个人隐私） ===
+# === 前端 ===
+frontend/node_modules/
+frontend/dist/
+
+# === 日志 ===
 logs/
 *.log
 *.jsonl
@@ -26,22 +29,11 @@ logs/
 temp-stream/
 * copy.*
 
-# === 本地配置 ===
-config.json
-
 # === 系统文件 ===
 .DS_Store
 Thumbs.db
 desktop.ini
 
-build/
-dist/
-*.spec
-
-logs/
-*.jsonl
-*.log
-
-temp-stream/
-* copy.*
-config.json
+# === 内部设计文档（不入仓） ===
+AGENTS.md
+docs/ARCHITECTURE.md
