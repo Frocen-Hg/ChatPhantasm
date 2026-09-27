@@ -29,6 +29,16 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api/v1")
 
+
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """index.html 禁止缓存，避免前端 hash 资源更新后被旧页面引用而 404"""
+    response = await call_next(request)
+    path = request.url.path
+    if path in ("/",) or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 # 生产模式：若存在前端构建产物则托管（frontend/dist）
 frontend_dist = ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():

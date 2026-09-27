@@ -2,9 +2,11 @@
 import { onMounted, ref } from 'vue'
 import { useProvidersStore } from '../stores/providers'
 import * as api from '../api/providers'
+import type { ProviderConfig } from '../types/provider'
 
 const store = useProvidersStore()
 const showForm = ref(false)
+const editingId = ref<number | null>(null)
 const name = ref('')
 const type = ref('openai_compat')
 const baseUrl = ref('')
@@ -20,6 +22,7 @@ const testing = ref(false)
 onMounted(() => store.fetchList())
 
 function resetForm(): void {
+  editingId.value = null
   name.value = ''
   type.value = 'openai_compat'
   baseUrl.value = type.value === 'ollama' ? 'http://localhost:11434' : ''
@@ -28,21 +31,43 @@ function resetForm(): void {
   isDefault.value = false
 }
 
+function openCreate(): void {
+  resetForm()
+  showForm.value = !showForm.value
+}
+
+function editProvider(p: ProviderConfig): void {
+  editingId.value = p.id
+  name.value = p.name
+  type.value = p.type
+  baseUrl.value = p.base_url
+  apiKey.value = ''
+  modelsText.value = p.models.join(',')
+  isDefault.value = p.is_default
+  showForm.value = true
+  error.value = ''
+}
+
 async function save(): Promise<void> {
   saving.value = true
   error.value = ''
+  const payload = {
+    name: name.value,
+    type: type.value,
+    base_url: baseUrl.value,
+    api_key: apiKey.value || null,
+    models: modelsText.value
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+    is_default: isDefault.value
+  }
   try {
-    await store.create({
-      name: name.value,
-      type: type.value,
-      base_url: baseUrl.value,
-      api_key: apiKey.value || null,
-      models: modelsText.value
-        .split(/[,，]/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-      is_default: isDefault.value
-    })
+    if (editingId.value !== null) {
+      await api.updateProvider(editingId.value, payload)
+    } else {
+      await store.create(payload)
+    }
     showForm.value = false
     resetForm()
   } catch (e: any) {
@@ -74,10 +99,14 @@ async function test(id: number): Promise<void> {
   <div class="page">
     <div class="row header">
       <h2>模型 Provider 设置</h2>
-      <button @click="showForm = !showForm">{{ showForm ? '取消' : '添加 Provider' }}</button>
+      <button @click="openCreate">{{ showForm ? '取消' : '添加 Provider' }}</button>
     </div>
 
     <form v-if="showForm" class="panel form" @submit.prevent="save">
+      <div class="row">
+        <h3>{{ editingId ? '编辑 Provider' : '添加 Provider' }}</h3>
+        <span v-if="editingId" class="muted">API Key 留空表示不改动</span>
+      </div>
       <div class="field">
         <label>名称</label>
         <input v-model="name" required placeholder="deepseek / ollama" />
@@ -121,6 +150,7 @@ async function test(id: number): Promise<void> {
         <div class="muted">models: {{ p.models.join(', ') || '—' }}</div>
         <div v-if="p.api_key_masked" class="muted">api_key: {{ p.api_key_masked }}</div>
         <div class="row actions">
+          <button class="ghost" @click="editProvider(p)">编辑</button>
           <button class="ghost" @click="test(p.id)" :disabled="testing">测试连通</button>
           <button class="danger" @click="remove(p.id)">删除</button>
         </div>

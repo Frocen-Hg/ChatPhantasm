@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useCharactersStore } from '../stores/characters'
 import { streamChat } from '../api/chat'
 import MessageBubble from '../components/MessageBubble.vue'
@@ -40,7 +40,7 @@ async function send(): Promise<void> {
   error.value = ''
 
   messages.value.push({ role: 'user', content: text })
-  const assistant: Msg = { role: 'assistant', content: '', loading: true }
+  const assistant = reactive<Msg>({ role: 'assistant', content: '', loading: true })
   messages.value.push(assistant)
   sending.value = true
 
