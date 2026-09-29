@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useCharactersStore } from '../stores/characters'
+import { useProvidersStore } from '../stores/providers'
 import { streamChat } from '../api/chat'
+import { testProvider } from '../api/providers'
 import {
   deleteConversation,
   getMessages,
@@ -17,7 +19,11 @@ interface Msg {
 }
 
 const characters = useCharactersStore()
+const providers = useProvidersStore()
 const currentId = ref<number | null>(null)
+const providerId = ref<number | null>(null)
+const model = ref('')
+const liveModels = ref<string[]>([])
 const conversations = ref<Conversation[]>([])
 const activeConvId = ref<number | null>(null)
 const messages = ref<Msg[]>([])
@@ -27,12 +33,55 @@ const error = ref('')
 const msgsEl = ref<HTMLElement | null>(null)
 
 const currentCharacter = computed(() => characters.list.find((c) => c.id === currentId.value))
+const modelOptions = computed(() => {
+  const p = providers.list.find((x) => x.id === providerId.value)
+  const cfg = p?.models ?? []
+  return cfg.length ? cfg : liveModels.value
+})
 
 onMounted(async () => {
-  await characters.fetchList()
+  await Promise.all([characters.fetchList(), providers.fetchList()])
   if (characters.list.length) {
     currentId.value = characters.list[0].id
   }
+})
+
+async function refreshLiveModels(): Promise<void> {
+  const p = providers.list.find((x) => x.id === providerId.value)
+  if (!p || (p.models?.length ?? 0) > 0) {
+    liveModels.value = []
+    return
+  }
+  try {
+    const r = await testProvider({ id: p.id })
+    liveModels.value = r.models ?? []
+  } catch {
+    liveModels.value = []
+  }
+}
+
+function syncProvider(): void {
+  const c = currentCharacter.value
+  if (!c) {
+    providerId.value = null
+    return
+  }
+  const extProvider = c.ext?.model?.provider
+  const target =
+    extProvider ??
+    providers.list.find((p) => p.is_default)?.id ??
+    providers.list[0]?.id ??
+    null
+  providerId.value = target
+  model.value = ''
+  void refreshLiveModels()
+}
+
+watch(modelOptions, (opts) => {
+  const cfgModel = currentCharacter.value?.ext?.model?.model
+  if (!opts.length) return
+  if (cfgModel && opts.includes(cfgModel)) model.value = cfgModel
+  else if (!opts.includes(model.value)) model.value = opts[0]
 })
 
 watch(currentId, async (id) => {
@@ -40,6 +89,7 @@ watch(currentId, async (id) => {
   activeConvId.value = null
   messages.value = []
   error.value = ''
+  syncProvider()
   await loadConversations()
 })
 
@@ -99,7 +149,13 @@ async function send(): Promise<void> {
 
   try {
     const convId = await streamChat(
-      { character_id: currentId.value, conversation_id: activeConvId.value, content: text },
+      {
+        character_id: currentId.value,
+        conversation_id: activeConvId.value,
+        content: text,
+        provider_id: providerId.value,
+        model: model.value || undefined
+      },
       (token) => {
         assistant.content += token
       }
@@ -151,9 +207,19 @@ watch(
 
     <div class="main">
       <header class="panel chat-header">
-        <div class="row">
+        <div class="row header-controls">
           <select v-model.number="currentId">
             <option v-for="c in characters.list" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
+          <select v-model.number="providerId" @change="refreshLiveModels">
+            <option v-if="!providers.list.length" :value="null">（未配置 Provider）</option>
+            <option v-for="p in providers.list" :key="p.id" :value="p.id">
+              {{ p.name }}（{{ p.type }}）{{ p.is_default ? '·默认' : '' }}
+            </option>
+          </select>
+          <select v-model="model">
+            <option v-if="!modelOptions.length" :value="''">（无可用模型，请检查 Provider 模型列表）</option>
+            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
           </select>
           <span class="muted">{{ activeConvId ? `会话 #${activeConvId}` : '新对话' }}</span>
         </div>
@@ -278,6 +344,11 @@ watch(
 
 .chat-header select {
   max-width: 240px;
+}
+
+.header-controls {
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .messages {

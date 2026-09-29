@@ -28,23 +28,35 @@ async def get_or_create_conversation(
     return conv
 
 
-async def resolve_provider(db: AsyncSession, character: Character) -> tuple[LLMProvider, dict]:
-    """按角色 ext.model 覆盖，否则用全局默认 Provider"""
+async def resolve_provider(
+    db: AsyncSession,
+    character: Character,
+    *,
+    provider_id: int | None = None,
+    model: str | None = None,
+) -> tuple[LLMProvider, dict]:
+    """按角色 ext.model 覆盖，否则用全局默认 Provider；provider_id / model 为本次会话临时覆盖"""
     ext = character.ext
     model_cfg = dict(ext.get("model") or {})
 
-    provider_id = model_cfg.get("provider")
-    if provider_id:
+    if provider_id is not None:
         provider = await db.get(ProviderConfig, int(provider_id))
     else:
-        result = await db.execute(select(ProviderConfig).where(ProviderConfig.is_default.is_(True)))
-        provider = result.scalar_one_or_none()
+        char_provider_id = model_cfg.get("provider")
+        if char_provider_id:
+            provider = await db.get(ProviderConfig, int(char_provider_id))
+        else:
+            result = await db.execute(select(ProviderConfig).where(ProviderConfig.is_default.is_(True)))
+            provider = result.scalar_one_or_none()
 
     if provider is None:
         raise ValueError("没有可用模型 Provider，请先在「设置」中添加并设为默认")
 
     llm = build_provider(provider)
-    model_cfg.setdefault("model", provider.models[0] if provider.models else settings.default_model)
+    if model:
+        model_cfg["model"] = model
+    else:
+        model_cfg.setdefault("model", provider.models[0] if provider.models else settings.default_model)
     model_cfg.setdefault("temperature", settings.default_temperature)
     model_cfg.setdefault("max_tokens", settings.default_max_tokens)
     return llm, model_cfg

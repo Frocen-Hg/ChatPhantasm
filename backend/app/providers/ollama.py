@@ -36,7 +36,9 @@ class OllamaProvider(LLMProvider, EmbeddingProvider):
             "stream": True,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=120)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5, read=120, write=120, pool=5)
+        ) as client:
             async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

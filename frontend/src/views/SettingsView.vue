@@ -31,6 +31,12 @@ function resetForm(): void {
   isDefault.value = false
 }
 
+function onTypeChange(): void {
+  if (type.value === 'ollama' && !baseUrl.value) {
+    baseUrl.value = 'http://localhost:11434'
+  }
+}
+
 function openCreate(): void {
   resetForm()
   showForm.value = !showForm.value
@@ -113,7 +119,7 @@ async function test(id: number): Promise<void> {
       </div>
       <div class="field">
         <label>类型</label>
-        <select v-model="type" @change="resetForm">
+        <select v-model="type" @change="onTypeChange">
           <option value="openai_compat">openai_compat（外部 API）</option>
           <option value="ollama">ollama（本地）</option>
         </select>

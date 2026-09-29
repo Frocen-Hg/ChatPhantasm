@@ -2,7 +2,7 @@
 
 LLM 角色扮演平台：多角色卡、分层记忆、心跳自我对话、独立知识库（向量检索），支持外部 API 与本地 Ollama。
 
-当前进度：**P0 骨架**（分层后端 + Provider 抽象 + 角色卡 CRUD + REST 流式聊天 + 最小前端）。完整架构见 `docs/ARCHITECTURE.md`。
+当前进度：**P0 骨架**（分层后端 + Provider 抽象 + 角色卡 CRUD + REST 流式聊天 + 最小前端）。
 
 ## 项目结构
 
@@ -86,4 +86,4 @@ docker compose up --build
 
 ## 演进路线
 
-P0 骨架 → P1 分层记忆 → P2 RAG 知识库 → P3 心跳自我对话 → P4 角色卡 Schema 兼容 → P5 发布（详见 `docs/ARCHITECTURE.md`）。
+P0 骨架 → P1 分层记忆 → P2 RAG 知识库 → P3 心跳自我对话 → P4 角色卡 Schema 兼容 。

@@ -20,7 +20,9 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="角色不存在")
 
     conversation = await chat_service.get_or_create_conversation(db, req.character_id, req.conversation_id)
-    provider, model_cfg = await chat_service.resolve_provider(db, character)
+    provider, model_cfg = await chat_service.resolve_provider(
+        db, character, provider_id=req.provider_id, model=req.model
+    )
 
     async def gen():
         try:
