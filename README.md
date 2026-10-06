@@ -1,5 +1,6 @@
 # Chat Phantasm
 
+项目目标
 LLM 角色扮演平台：多角色卡、分层记忆、心跳自我对话、独立知识库（向量检索），支持外部 API 与本地 Ollama。
 
 当前进度：**P0 骨架**（分层后端 + Provider 抽象 + 角色卡 CRUD + REST 流式聊天 + 最小前端）。
@@ -27,8 +28,7 @@ ChatPhantasm/
 │       ├── stores/            # Pinia stores
 │       └── api/               # 类型化 API client
 ├── prompts/phantasm_v1.txt    # 影子角色卡 seed 系统提示词
-├── docker-compose.yml         # postgres + backend + frontend
-└── docs/ARCHITECTURE.md       # 目标架构设计
+└── docker-compose.yml         # postgres + backend + frontend
 ```
 
 ## 快速开始（本地）
@@ -57,7 +57,7 @@ docker compose up --build
 ```
 
 - 前端 http://localhost:5173（nginx 代理 /api → backend）
-- 后端 http://localhost:8000，API 文档 http://localhost:8000/docs
+- 后端 http://localhost:8000，API 文档 http://localhost:8000/docs http://127.0.0.1:8000/redoc
 
 ## API（/api/v1）
 
@@ -65,6 +65,7 @@ docker compose up --build
 |---|---|---|
 | GET | /characters | 角色卡列表 |
 | POST | /characters | 新建角色卡（card + ext） |
+| GET | /characters/{id} | 获取角色卡 |
 | PUT | /characters/{id} | 更新角色卡 |
 | DELETE | /characters/{id} | 删除角色卡 |
 | POST | /chat | 流式聊天（text/plain，响应头 X-Conversation-Id 为会话 id） |
