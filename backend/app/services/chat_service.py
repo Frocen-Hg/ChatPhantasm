@@ -6,10 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..db.models import Character, Conversation, Message, ProviderConfig
 from ..providers.base import LLMProvider
-from .character_service import compose_system_prompt
-from .provider_service import build_provider
-
-HISTORY_LIMIT = 20
+from .memory_service import build_context, schedule_ingest
+from .provider_service import build_provider, get_route
 
 
 async def get_or_create_conversation(
@@ -39,12 +37,20 @@ async def resolve_provider(
     ext = character.ext
     model_cfg = dict(ext.get("model") or {})
 
+    route = await get_route(db, "chat") if provider_id is None else None
+
     if provider_id is not None:
         provider = await db.get(ProviderConfig, int(provider_id))
     else:
         char_provider_id = model_cfg.get("provider")
         if char_provider_id:
             provider = await db.get(ProviderConfig, int(char_provider_id))
+        elif route is not None and route.enabled:
+            provider = await db.get(ProviderConfig, route.provider_id)
+            if route.model:
+                model_cfg.setdefault("model", route.model)
+            for key, value in route.params.items():
+                model_cfg.setdefault(key, value)
         else:
             result = await db.execute(select(ProviderConfig).where(ProviderConfig.is_default.is_(True)))
             provider = result.scalar_one_or_none()
@@ -62,17 +68,6 @@ async def resolve_provider(
     return llm, model_cfg
 
 
-async def load_history(db: AsyncSession, conversation_id: int, limit: int = HISTORY_LIMIT) -> list[dict]:
-    result = await db.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id.desc())
-        .limit(limit)
-    )
-    rows = list(reversed(result.scalars().all()))
-    return [{"role": m.role, "content": m.content} for m in rows]
-
-
 async def stream_reply(
     db: AsyncSession,
     conversation: Conversation,
@@ -81,13 +76,8 @@ async def stream_reply(
     model_cfg: dict,
     content: str,
 ) -> AsyncIterator[str]:
-    """流式回复：持久化 user/assistant 消息，逐 token 产出"""
-    history = await load_history(db, conversation.id, limit=HISTORY_LIMIT - 1)
-    messages = [
-        {"role": "system", "content": compose_system_prompt(character.card)},
-        *history,
-        {"role": "user", "content": content},
-    ]
+    """流式回复：分层记忆组装上下文，持久化 user/assistant 消息，逐 token 产出"""
+    messages = await build_context(db, character, conversation.id, content)
     db.add(Message(conversation_id=conversation.id, role="user", content=content))
 
     parts: list[str] = []
@@ -103,3 +93,4 @@ async def stream_reply(
     reply = "".join(parts)
     db.add(Message(conversation_id=conversation.id, role="assistant", content=reply))
     await db.commit()
+    schedule_ingest(character.id, conversation.id, content, reply, provider, model_cfg)

@@ -8,8 +8,15 @@ from .base import EmbeddingProvider, LLMProvider
 class OpenAICompatProvider(LLMProvider, EmbeddingProvider):
     """OpenAI 兼容端点（DeepSeek / OpenAI / OpenRouter / Moonshot 等）"""
 
-    def __init__(self, api_key: str = "", base_url: str = "", default_model: str = "deepseek-chat"):
+    def __init__(
+        self,
+        api_key: str = "",
+        base_url: str = "",
+        default_model: str = "deepseek-chat",
+        default_embed_model: str = "text-embedding-3-small",
+    ):
         self.default_model = default_model
+        self.default_embed_model = default_embed_model
         self.client = AsyncOpenAI(
             api_key=api_key or "sk-placeholder",
             base_url=base_url or None,
@@ -43,6 +50,8 @@ class OpenAICompatProvider(LLMProvider, EmbeddingProvider):
                 if delta:
                     yield delta
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        resp = await self.client.embeddings.create(model="text-embedding-3-small", input=texts)
+    async def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]:
+        resp = await self.client.embeddings.create(
+            model=model or self.default_embed_model, input=texts
+        )
         return [d.embedding for d in resp.data]

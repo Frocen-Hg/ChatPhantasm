@@ -20,7 +20,11 @@ class LLMProvider(ABC):
 
 
 class EmbeddingProvider(ABC):
-    """向量化接口抽象（RAG 记忆/知识库复用）"""
+    """向量化接口抽象（RAG 记忆/知识库复用）
+
+    嵌入模型独立于聊天模型，可由 Provider 的 embedding_model 指定；
+    模型名作为调用参数显式传入，避免把模型硬编码在实现里。
+    """
 
     @abstractmethod
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]: ...

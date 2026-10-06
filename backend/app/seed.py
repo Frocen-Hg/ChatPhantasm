@@ -4,7 +4,7 @@ import json
 from sqlalchemy import select
 
 from .config import ROOT_DIR, settings
-from .db.models import Character, ProviderConfig
+from .db.models import Character, ModelRoute, ProviderConfig
 from .db.session import SessionLocal, init_db
 
 
@@ -19,6 +19,8 @@ async def seed_defaults() -> None:
         await _ensure_seed_character(db)
         await _repair_dangling_provider_refs(db)
         await _ensure_default_provider_flag(db)
+        await _ensure_routes(db)
+        await _repair_dangling_routes(db)
         await db.commit()
 
 
@@ -111,6 +113,48 @@ async def _ensure_default_provider_flag(db) -> None:
         default = first
     if default.type == "openai_compat" and not default.api_key and settings.deepseek_api_key:
         default.api_key = settings.deepseek_api_key
+
+
+async def _ensure_routes(db) -> None:
+    """无功能位路由时，按默认 provider 生成 chat / embedding 两行"""
+    from .services.provider_service import embedding_model_for
+
+    has = (await db.execute(select(ModelRoute).limit(1))).scalar_one_or_none()
+    if has is not None:
+        return
+    default = (
+        await db.execute(select(ProviderConfig).where(ProviderConfig.is_default.is_(True)).limit(1))
+    ).scalar_one_or_none()
+    if default is None:
+        return
+    emb = (
+        await db.execute(
+            select(ProviderConfig).where(ProviderConfig.is_embedding_default.is_(True)).limit(1)
+        )
+    ).scalar_one_or_none() or default
+    db.add(
+        ModelRoute(
+            capability="chat",
+            provider_id=default.id,
+            model=default.models[0] if default.models else "",
+        )
+    )
+    db.add(
+        ModelRoute(
+            capability="embedding",
+            provider_id=emb.id,
+            model=embedding_model_for(emb),
+        )
+    )
+    await db.flush()
+
+
+async def _repair_dangling_routes(db) -> None:
+    """路由指向已不存在的 provider → 删除该路由，使其回落全局默认"""
+    routes = (await db.execute(select(ModelRoute))).scalars().all()
+    for route in routes:
+        if await db.get(ProviderConfig, route.provider_id) is None:
+            await db.delete(route)
 
 
 async def _seed() -> None:

@@ -1,9 +1,9 @@
 import json
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.models import Character
+from ..db.models import Character, CharacterState, Memory
 
 DEFAULT_CARD_VERSION = "1"
 
@@ -82,5 +82,8 @@ async def update_character(
 
 
 async def delete_character(db: AsyncSession, character: Character) -> None:
+    """删除角色并清理其记忆与内心状态（表间无级联，需显式清理）"""
+    await db.execute(delete(Memory).where(Memory.character_id == character.id))
+    await db.execute(delete(CharacterState).where(CharacterState.character_id == character.id))
     await db.delete(character)
     await db.commit()

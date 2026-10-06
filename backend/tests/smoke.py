@@ -74,6 +74,31 @@ def main() -> None:
         r = client.get(f"/api/v1/characters/{new_id}")
         check("读取角色", r.status_code == 200 and r.json()["id"] == new_id, r.text)
 
+        # 3.5 记忆 API（P1 分层记忆）
+        r = client.post(
+            f"/api/v1/memory/characters/{new_id}/memories",
+            json={"content": "喜欢和角色聊天气", "kind": "preference", "importance": 8},
+        )
+        check("创建记忆", r.status_code == 200, r.text)
+        mid = r.json()["id"] if r.status_code == 200 else None
+
+        r = client.get(f"/api/v1/memory/characters/{new_id}/memories")
+        check("记忆列表 200", r.status_code == 200 and len(r.json()) >= 1, r.text)
+
+        r = client.get(f"/api/v1/memory/characters/{new_id}/memories?kind=preference")
+        check("记忆按类型过滤", r.status_code == 200 and len(r.json()) >= 1, r.text)
+
+        if mid:
+            r = client.patch(f"/api/v1/memory/memories/{mid}", json={"importance": 3})
+            check("更新记忆", r.status_code == 200 and r.json()["importance"] == 3, r.text)
+
+        r = client.get(f"/api/v1/memory/characters/{new_id}/state")
+        check("角色状态 200", r.status_code == 200 and r.json()["character_id"] == new_id, r.text)
+
+        if mid:
+            r = client.delete(f"/api/v1/memory/memories/{mid}")
+            check("删除记忆", r.status_code == 200, r.text)
+
         # 4. 聊天错误路径（不触发真实 LLM）
         r = client.post("/api/v1/chat", json={"character_id": 999999, "content": "hi"})
         check("聊天-角色不存在返回 404", r.status_code == 404, r.text)
@@ -91,7 +116,7 @@ def main() -> None:
             r = client.delete(f"/api/v1/conversations/{cid}")
             check("删除会话 200", r.status_code == 200, r.text)
 
-        # 6. provider CRUD
+        # 6. provider CRUD（含独立嵌入配置）
         r = client.post(
             "/api/v1/providers",
             json={
@@ -100,16 +125,51 @@ def main() -> None:
                 "base_url": "http://localhost:11434",
                 "models": ["smoke-model"],
                 "is_default": False,
+                "embedding_model": "nomic-embed-text",
+                "is_embedding_default": True,
             },
         )
         check("创建 provider", r.status_code == 200, r.text)
+        check(
+            "provider 携带嵌入配置",
+            r.json().get("embedding_model") == "nomic-embed-text"
+            and r.json().get("is_embedding_default") is True,
+            r.text,
+        )
         pid = r.json()["id"]
+
+        # 6.5 功能位路由（capability → provider/model）
+        r = client.get("/api/v1/providers/routes")
+        caps = {x["capability"] for x in r.json()} if r.status_code == 200 else set()
+        check(
+            "路由列表含 chat/embedding",
+            r.status_code == 200 and {"chat", "embedding"} <= caps,
+            r.text,
+        )
+
+        r = client.put(
+            "/api/v1/providers/routes/chat",
+            json={"provider_id": pid, "model": "smoke-model", "params": {"temperature": 0.9}},
+        )
+        check("绑定 chat 路由", r.status_code == 200 and r.json()["model"] == "smoke-model", r.text)
+
+        r = client.get("/api/v1/providers/routes")
+        chat_route = next((x for x in r.json() if x["capability"] == "chat"), {})
+        check("chat 路由指向临时 provider", chat_route.get("provider_id") == pid, r.text)
+
         r = client.delete(f"/api/v1/providers/{pid}")
         check("删除 provider", r.status_code == 200, r.text)
 
-        # 7. 删除角色
+        r = client.get("/api/v1/providers/routes")
+        left = [x for x in r.json() if x["provider_id"] == pid]
+        check("删除 provider 清理其路由", left == [], r.text)
+
+        # 7. 删除角色（并验证记忆级联清理）
+        client.post(f"/api/v1/memory/characters/{new_id}/memories", json={"content": "级联测试"})
         r = client.delete(f"/api/v1/characters/{new_id}")
         check("删除角色", r.status_code == 200, r.text)
+        r = client.get(f"/api/v1/memory/characters/{new_id}/memories")
+        check("删除角色级联清理记忆", r.status_code == 200 and r.json() == [], r.text)
 
         # 8. SPA 深链兜底（存在前端构建产物时）
         if (ROOT_DIR / "frontend" / "dist").exists():
