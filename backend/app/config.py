@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     memory_window: int = 20  # L1 最近 N 轮注入窗口
     memory_top_k: int = 6  # L3 长期记忆检索条数
     memory_half_life_days: float = 30.0  # 时间衰减半衰期
+    memory_decay_min: float = 0.5  # 有效重要度低于此值则归档（decay_at）
+    memory_dedupe_threshold: float = 0.6  # 记忆去重相似度阈值（关键词 Jaccard）
     summarize_every: int = 10  # 每 N 条消息触发一次摘要
 
 

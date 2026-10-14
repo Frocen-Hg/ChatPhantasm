@@ -27,3 +27,7 @@ export function deleteMemory(memoryId: number): Promise<{ ok: boolean }> {
 export function getCharacterState(characterId: number): Promise<CharacterState> {
   return get<CharacterState>(`/memory/characters/${characterId}/state`)
 }
+
+export function decayMemories(characterId: number): Promise<{ archived: number }> {
+  return post<{ archived: number }>(`/memory/characters/${characterId}/decay`, {})
+}

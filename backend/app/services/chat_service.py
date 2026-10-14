@@ -78,7 +78,8 @@ async def stream_reply(
 ) -> AsyncIterator[str]:
     """流式回复：分层记忆组装上下文，持久化 user/assistant 消息，逐 token 产出"""
     messages = await build_context(db, character, conversation.id, content)
-    db.add(Message(conversation_id=conversation.id, role="user", content=content))
+    user_message = Message(conversation_id=conversation.id, role="user", content=content)
+    db.add(user_message)
 
     parts: list[str] = []
     async for token in provider.chat(
@@ -91,6 +92,16 @@ async def stream_reply(
         yield token
 
     reply = "".join(parts)
-    db.add(Message(conversation_id=conversation.id, role="assistant", content=reply))
+    assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply)
+    db.add(assistant_message)
     await db.commit()
-    schedule_ingest(character.id, conversation.id, content, reply, provider, model_cfg)
+    schedule_ingest(
+        character.id,
+        conversation.id,
+        content,
+        reply,
+        provider,
+        model_cfg,
+        user_message.id,
+        assistant_message.id,
+    )

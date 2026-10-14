@@ -22,6 +22,9 @@ def _to_out(m: Memory) -> dict:
         "importance": m.importance,
         "visibility": m.visibility,
         "access_count": m.access_count,
+        "source_start_id": m.source_start_id,
+        "source_end_id": m.source_end_id,
+        "decay_at": m.decay_at,
         "meta": json.loads(m.meta_json or "{}"),
         "created_at": m.created_at,
     }
@@ -91,3 +94,12 @@ async def get_state(character_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="角色不存在")
     state = await memory_service.get_or_create_state(db, character_id)
     return _state_to_out(state)
+
+
+@router.post("/characters/{character_id}/decay")
+async def decay_memories(character_id: int, db: AsyncSession = Depends(get_db)):
+    """手动触发惰性衰减归档（平时在摘要触发时同频自动执行）"""
+    if await db.get(Character, character_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    archived = await memory_service.decay_memories(db, character_id)
+    return {"archived": archived}

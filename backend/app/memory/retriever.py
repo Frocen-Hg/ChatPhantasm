@@ -47,3 +47,18 @@ def rank_score(query: str, memory, half_life_days: float) -> float:
         return 0.0
     importance = max(0.0, min(float(memory.importance or 0.0), 10.0)) / 10.0
     return (0.2 + 0.8 * kw) * importance * recency(memory.created_at, half_life_days)
+
+
+def similarity(a: str, b: str) -> float:
+    """两段文本的 Jaccard 相似度（基于关键词集合），用于去重/合并"""
+    ta, tb = _terms(a), _terms(b)
+    if not ta or not tb:
+        return 0.0
+    union = ta | tb
+    return len(ta & tb) / len(union) if union else 0.0
+
+
+def effective_importance(importance: float, created_at: datetime | None, half_life_days: float) -> float:
+    """有效重要度：importance × exp(-Δt/半衰期)，用于惰性衰减归档"""
+    value = max(0.0, min(float(importance or 0.0), 10.0))
+    return value * recency(created_at, half_life_days)

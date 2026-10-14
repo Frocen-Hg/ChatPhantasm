@@ -99,6 +99,13 @@ def main() -> None:
             r = client.delete(f"/api/v1/memory/memories/{mid}")
             check("删除记忆", r.status_code == 200, r.text)
 
+        r = client.post(f"/api/v1/memory/characters/{new_id}/decay")
+        check(
+            "衰减归档 200",
+            r.status_code == 200 and "archived" in r.json(),
+            r.text,
+        )
+
         # 4. 聊天错误路径（不触发真实 LLM）
         r = client.post("/api/v1/chat", json={"character_id": 999999, "content": "hi"})
         check("聊天-角色不存在返回 404", r.status_code == 404, r.text)

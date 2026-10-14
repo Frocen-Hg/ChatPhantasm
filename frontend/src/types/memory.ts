@@ -8,6 +8,9 @@ export interface Memory {
   importance: number
   visibility: string // public | private
   access_count: number
+  source_start_id?: number | null
+  source_end_id?: number | null
+  decay_at?: string | null
   meta: Record<string, unknown>
   created_at: string
 }

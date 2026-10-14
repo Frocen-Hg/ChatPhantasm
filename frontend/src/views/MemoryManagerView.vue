@@ -11,6 +11,8 @@ const memories = ref<Memory[]>([])
 const state = ref<CharacterState | null>(null)
 const loading = ref(false)
 const error = ref('')
+const notice = ref('')
+const decaying = ref(false)
 
 const layerFilter = ref('')
 const kindFilter = ref('')
@@ -149,6 +151,22 @@ async function remove(id: number): Promise<void> {
   await load()
 }
 
+async function decay(): Promise<void> {
+  if (!characterId.value) return
+  decaying.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await api.decayMemories(characterId.value)
+    notice.value = `已归档 ${res.archived} 条衰减记忆`
+    await load()
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    decaying.value = false
+  }
+}
+
 function fmt(dt: string | null): string {
   if (!dt) return '—'
   return new Date(dt).toLocaleString()
@@ -164,9 +182,14 @@ function fmt(dt: string | null): string {
           <option v-for="c in characters.list" :key="c.id" :value="c.id">{{ c.name }}</option>
         </select>
         <button class="ghost" @click="load">刷新</button>
+        <button class="ghost" :disabled="decaying" @click="decay">
+          {{ decaying ? '清理中…' : '清理衰减' }}
+        </button>
         <button @click="showForm = !showForm">{{ showForm ? '取消' : '新建记忆' }}</button>
       </div>
     </div>
+
+    <div v-if="notice" class="notice">{{ notice }}</div>
 
     <div v-if="state" class="panel state">
       <strong>内心状态</strong>
@@ -246,8 +269,13 @@ function fmt(dt: string | null): string {
             <span class="tag">{{ m.layer }}</span>
             <span class="tag tag-kind">{{ kindLabel(m.kind) }}</span>
             <span v-if="m.visibility === 'private'" class="tag tag-private">private</span>
+            <span v-if="m.decay_at" class="tag tag-archived">已归档</span>
           </div>
-          <span class="muted">#{{ m.id }} · {{ fmt(m.created_at) }}</span>
+          <span class="muted">
+            #{{ m.id }}
+            <template v-if="m.source_start_id">· 溯源 #{{ m.source_start_id }}-{{ m.source_end_id }}</template>
+            · {{ fmt(m.created_at) }}
+          </span>
         </div>
 
         <template v-if="editingId === m.id">
@@ -272,7 +300,7 @@ function fmt(dt: string | null): string {
         </template>
 
         <template v-else>
-          <p class="content">{{ m.content }}</p>
+          <p class="content" :class="{ archived: !!m.decay_at }">{{ m.content }}</p>
           <div class="row spread">
             <span class="muted">重要度 {{ m.importance }} · 访问 {{ m.access_count }} 次</span>
             <div class="row actions">
@@ -373,6 +401,21 @@ label {
 .tag-private {
   background: rgba(248, 113, 113, 0.2);
   color: #f87171;
+}
+
+.tag-archived {
+  background: rgba(156, 163, 175, 0.2);
+  color: #9ca3af;
+}
+
+.content.archived {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.notice {
+  color: #4ade80;
+  font-size: 13px;
 }
 
 .actions {

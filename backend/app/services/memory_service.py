@@ -20,7 +20,7 @@ from ..config import settings
 from ..db.models import Character, CharacterState, Memory, Message
 from ..db.session import SessionLocal
 from ..memory import extractor, summarizer
-from ..memory.retriever import rank_score
+from ..memory.retriever import effective_importance, rank_score, similarity
 from .character_service import compose_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,11 @@ async def retrieve(
     """长期记忆检索：先按 importance 取候选，再关键词 × 重要性 × 衰减排序"""
     result = await db.execute(
         select(Memory)
-        .where(Memory.character_id == character_id, Memory.visibility == "public")
+        .where(
+            Memory.character_id == character_id,
+            Memory.visibility == "public",
+            Memory.decay_at.is_(None),  # 已衰减归档的记忆不参与注入
+        )
         .order_by(Memory.importance.desc(), Memory.id.desc())
         .limit(200)
     )
@@ -151,32 +155,49 @@ async def ingest_turn(
     assistant_msg: str,
     provider,
     model_cfg: dict,
+    source_start_id: int | None = None,
+    source_end_id: int | None = None,
 ) -> None:
-    """一轮对话结束后：抽取事实入库（L3），并按阈值触发摘要（L2）"""
+    """一轮对话结束后：抽取事实入库（L3，含溯源与去重合并），按阈值触发摘要（L2）与惰性衰减"""
+    mem_cfg = character.ext.get("memory") or {}
     items = await extractor.extract_memories(
         provider, model_cfg, character.name, user_msg, assistant_msg
     )
+    threshold = float(mem_cfg.get("dedupe_threshold", settings.memory_dedupe_threshold))
     for it in items:
-        db.add(
-            Memory(
-                character_id=character.id,
-                conversation_id=conversation_id,
-                layer="L3",
-                kind=it["kind"],
-                content=it["content"],
-                importance=it["importance"],
-                visibility="public",
+        existing = await _find_duplicate(db, character.id, it["kind"], it["content"], threshold)
+        if existing is not None:
+            _merge_memory(existing, it["content"], it["importance"])
+        else:
+            db.add(
+                Memory(
+                    character_id=character.id,
+                    conversation_id=conversation_id,
+                    layer="L3",
+                    kind=it["kind"],
+                    content=it["content"],
+                    importance=it["importance"],
+                    visibility="public",
+                    source_start_id=source_start_id,
+                    source_end_id=source_end_id,
+                )
             )
-        )
 
     state = await get_or_create_state(db, character.id)
     state.last_user_at = datetime.now()
     await db.commit()
 
-    every = int((character.ext.get("memory") or {}).get("summarize_every", settings.summarize_every))
+    every = int(mem_cfg.get("summarize_every", settings.summarize_every))
     total = await _message_count(db, conversation_id)
     if every > 0 and total > 0 and total % every == 0:
         await _summarize(db, character, conversation_id, provider, model_cfg, every)
+        # 与摘要同频做惰性衰减，避免每轮全表扫描
+        await decay_memories(
+            db,
+            character.id,
+            half_life_days=float(mem_cfg.get("half_life_days", settings.memory_half_life_days)),
+            min_effective=float(mem_cfg.get("decay_min", settings.memory_decay_min)),
+        )
 
 
 async def _message_count(db: AsyncSession, conversation_id: int) -> int:
@@ -221,6 +242,62 @@ async def _summarize(
     await db.commit()
 
 
+async def _find_duplicate(
+    db: AsyncSession, character_id: int, kind: str, content: str, threshold: float
+) -> Memory | None:
+    """在同角色同类未归档记忆中找相似度最高者（扫描最近 200 条）"""
+    result = await db.execute(
+        select(Memory)
+        .where(
+            Memory.character_id == character_id,
+            Memory.kind == kind,
+            Memory.decay_at.is_(None),
+        )
+        .order_by(Memory.id.desc())
+        .limit(200)
+    )
+    best: Memory | None = None
+    best_score = 0.0
+    for m in result.scalars().all():
+        score = similarity(content, m.content)
+        if score > best_score:
+            best, best_score = m, score
+    return best if best_score >= threshold else None
+
+
+def _merge_memory(memory: Memory, content: str, importance: float) -> None:
+    """合并重复记忆：保留更完整的内容，重要度取大并小幅提升，记录合并次数"""
+    if len(content) > len(memory.content):
+        memory.content = content
+    memory.importance = min(10.0, max(float(memory.importance or 0.0), importance) + 0.5)
+    meta = memory.meta
+    meta["merged"] = int(meta.get("merged", 0)) + 1
+    memory.meta_json = json.dumps(meta, ensure_ascii=False)
+
+
+async def decay_memories(
+    db: AsyncSession,
+    character_id: int,
+    half_life_days: float | None = None,
+    min_effective: float | None = None,
+) -> int:
+    """惰性衰减：有效重要度低于阈值 → 写 decay_at 归档，不再参与检索注入"""
+    half_life = float(settings.memory_half_life_days if half_life_days is None else half_life_days)
+    threshold = float(settings.memory_decay_min if min_effective is None else min_effective)
+    result = await db.execute(
+        select(Memory).where(Memory.character_id == character_id, Memory.decay_at.is_(None))
+    )
+    now = datetime.now()
+    archived = 0
+    for m in result.scalars().all():
+        if effective_importance(m.importance, m.created_at, half_life) < threshold:
+            m.decay_at = now
+            archived += 1
+    if archived:
+        await db.commit()
+    return archived
+
+
 def schedule_ingest(
     character_id: int,
     conversation_id: int,
@@ -228,10 +305,21 @@ def schedule_ingest(
     assistant_msg: str,
     provider,
     model_cfg: dict,
+    source_start_id: int | None = None,
+    source_end_id: int | None = None,
 ) -> None:
     """在流式响应结束后异步写入记忆，避免阻塞返回"""
     task = asyncio.create_task(
-        _run_ingest(character_id, conversation_id, user_msg, assistant_msg, provider, model_cfg)
+        _run_ingest(
+            character_id,
+            conversation_id,
+            user_msg,
+            assistant_msg,
+            provider,
+            model_cfg,
+            source_start_id,
+            source_end_id,
+        )
     )
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
@@ -244,6 +332,8 @@ async def _run_ingest(
     assistant_msg: str,
     provider,
     model_cfg: dict,
+    source_start_id: int | None,
+    source_end_id: int | None,
 ) -> None:
     async with SessionLocal() as db:
         try:
@@ -251,7 +341,15 @@ async def _run_ingest(
             if character is None:
                 return
             await ingest_turn(
-                db, character, conversation_id, user_msg, assistant_msg, provider, model_cfg
+                db,
+                character,
+                conversation_id,
+                user_msg,
+                assistant_msg,
+                provider,
+                model_cfg,
+                source_start_id,
+                source_end_id,
             )
         except Exception as e:  # noqa: BLE001 后台任务失败不影响主流程
             logger.warning("后台记忆写入失败：%s", e)
