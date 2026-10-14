@@ -44,7 +44,11 @@ class Settings(BaseSettings):
     memory_half_life_days: float = 30.0  # 时间衰减半衰期
     memory_decay_min: float = 0.5  # 有效重要度低于此值则归档（decay_at）
     memory_dedupe_threshold: float = 0.6  # 记忆去重相似度阈值（关键词 Jaccard）
-    summarize_every: int = 10  # 每 N 条消息触发一次摘要
+    summarize_every: int = 10  # 每积累 N 条「未摘要」新消息触发一次滚动摘要
+    # 记忆写入任务（outbox + worker）
+    memory_jobs_enabled: bool = True
+    memory_worker_interval: float = 2.0  # worker 空转轮询间隔（秒）
+    memory_job_max_attempts: int = 3  # 失败重试上限，超过置 failed
 
 
 settings = Settings()

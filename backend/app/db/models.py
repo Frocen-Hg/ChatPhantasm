@@ -128,6 +128,27 @@ class Memory(Base):
             return {}
 
 
+class MemoryJob(Base):
+    """记忆写入任务（outbox）：与消息同事务落库，由 worker 可靠消费并支持重试。
+
+    避免 asyncio.create_task 在进程重启/CLI 退出时静默丢失抽取与摘要。
+    """
+
+    __tablename__ = "memory_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"))
+    source_start_id: Mapped[int] = mapped_column(Integer)  # user 消息 id
+    source_end_id: Mapped[int] = mapped_column(Integer)  # assistant 消息 id
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|running|done|failed
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class CharacterState(Base):
     """角色内心状态（单行），供独白/心跳读写；P1 仅建表，P3 填充"""
 

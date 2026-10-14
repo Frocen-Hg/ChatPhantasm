@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..db.models import Character, Conversation, Message, ProviderConfig
 from ..providers.base import LLMProvider
-from .memory_service import build_context, schedule_ingest
+from .memory_service import build_context, enqueue_ingest
 from .provider_service import build_provider, get_route
 
 
@@ -94,14 +94,6 @@ async def stream_reply(
     reply = "".join(parts)
     assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply)
     db.add(assistant_message)
+    await db.flush()  # 取消息 id，供任务溯源
+    enqueue_ingest(db, character.id, conversation.id, user_message.id, assistant_message.id)
     await db.commit()
-    schedule_ingest(
-        character.id,
-        conversation.id,
-        content,
-        reply,
-        provider,
-        model_cfg,
-        user_message.id,
-        assistant_message.id,
-    )

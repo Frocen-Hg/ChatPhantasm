@@ -9,24 +9,22 @@
 """
 
 import asyncio
+import contextlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..db.models import Character, CharacterState, Memory, Message
+from ..db.models import Character, CharacterState, Memory, MemoryJob, Message
 from ..db.session import SessionLocal
 from ..memory import extractor, summarizer
 from ..memory.retriever import effective_importance, rank_score, similarity
 from .character_service import compose_system_prompt
 
 logger = logging.getLogger(__name__)
-
-# 后台任务强引用集合，避免 asyncio 任务被 GC 提前回收
-_bg_tasks: set[asyncio.Task] = set()
 
 
 async def load_history(db: AsyncSession, conversation_id: int, limit: int) -> list[dict]:
@@ -77,6 +75,7 @@ async def retrieve(
             Memory.character_id == character_id,
             Memory.visibility == "public",
             Memory.decay_at.is_(None),  # 已衰减归档的记忆不参与注入
+            Memory.layer.in_(("L3", "L4")),  # L2 摘要走专属区块，避免重复注入
         )
         .order_by(Memory.importance.desc(), Memory.id.desc())
         .limit(200)
@@ -262,21 +261,27 @@ async def ingest_turn(
     await db.commit()
 
     every = int(mem_cfg.get("summarize_every", settings.summarize_every))
-    total = await _message_count(db, conversation_id)
-    if every > 0 and total > 0 and total % every == 0:
-        await _summarize(db, character, conversation_id, provider, model_cfg, every)
-        # 与摘要同频做惰性衰减，避免每轮全表扫描
-        await decay_memories(
-            db,
-            character.id,
-            half_life_days=float(mem_cfg.get("half_life_days", settings.memory_half_life_days)),
-            min_effective=float(mem_cfg.get("decay_min", settings.memory_decay_min)),
-        )
+    if every > 0:
+        summary = await latest_summary(db, character.id, conversation_id)
+        cursor = (summary.source_end_id or 0) if summary else 0
+        pending = await _pending_count(db, conversation_id, cursor)
+        if pending >= every:
+            await _summarize(db, character, conversation_id, provider, model_cfg)
+            # 与摘要同频做惰性衰减，避免每轮全表扫描
+            await decay_memories(
+                db,
+                character.id,
+                half_life_days=float(mem_cfg.get("half_life_days", settings.memory_half_life_days)),
+                min_effective=float(mem_cfg.get("decay_min", settings.memory_decay_min)),
+            )
 
 
-async def _message_count(db: AsyncSession, conversation_id: int) -> int:
+async def _pending_count(db: AsyncSession, conversation_id: int, cursor: int) -> int:
+    """游标之后的未摘要消息数"""
     result = await db.execute(
-        select(func.count(Message.id)).where(Message.conversation_id == conversation_id)
+        select(func.count(Message.id)).where(
+            Message.conversation_id == conversation_id, Message.id > cursor
+        )
     )
     return result.scalar_one()
 
@@ -287,32 +292,41 @@ async def _summarize(
     conversation_id: int,
     provider,
     model_cfg: dict,
-    limit: int,
 ) -> None:
+    """滚动摘要：把游标之后的新消息并入本会话唯一的 L2 摘要行"""
+    summary = await latest_summary(db, character.id, conversation_id)
+    cursor = (summary.source_end_id or 0) if summary else 0
     result = await db.execute(
         select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id.desc())
-        .limit(limit)
+        .where(Message.conversation_id == conversation_id, Message.id > cursor)
+        .order_by(Message.id)
     )
-    rows = list(reversed(result.scalars().all()))
+    rows = list(result.scalars().all())
     if not rows:
         return
-    content = await summarizer.summarize(provider, model_cfg, character.name, rows)
+    content = await summarizer.summarize(
+        provider, model_cfg, character.name, rows, previous=summary.content if summary else ""
+    )
     if not content:
         return
-    db.add(
-        Memory(
-            character_id=character.id,
-            conversation_id=conversation_id,
-            layer="L2",
-            kind="summary",
-            content=content,
-            importance=6.0,
-            source_start_id=rows[0].id,
-            source_end_id=rows[-1].id,
+    if summary is not None:
+        summary.content = content
+        summary.source_end_id = rows[-1].id
+        summary.importance = min(10.0, float(summary.importance or 6.0) + 0.5)
+        summary.decay_at = None  # 若曾被归档则复活
+    else:
+        db.add(
+            Memory(
+                character_id=character.id,
+                conversation_id=conversation_id,
+                layer="L2",
+                kind="summary",
+                content=content,
+                importance=6.0,
+                source_start_id=rows[0].id,
+                source_end_id=rows[-1].id,
+            )
         )
-    )
     await db.commit()
 
 
@@ -372,61 +386,127 @@ async def decay_memories(
     return archived
 
 
-def schedule_ingest(
+def enqueue_ingest(
+    db: AsyncSession,
     character_id: int,
     conversation_id: int,
-    user_msg: str,
-    assistant_msg: str,
-    provider,
-    model_cfg: dict,
-    source_start_id: int | None = None,
-    source_end_id: int | None = None,
-) -> None:
-    """在流式响应结束后异步写入记忆，避免阻塞返回"""
-    task = asyncio.create_task(
-        _run_ingest(
-            character_id,
-            conversation_id,
-            user_msg,
-            assistant_msg,
-            provider,
-            model_cfg,
-            source_start_id,
-            source_end_id,
-        )
+    source_start_id: int,
+    source_end_id: int,
+) -> MemoryJob:
+    """把一轮对话的记忆写入登记为 outbox 任务（与消息同一事务提交，崩溃可恢复）"""
+    job = MemoryJob(
+        character_id=character_id,
+        conversation_id=conversation_id,
+        source_start_id=source_start_id,
+        source_end_id=source_end_id,
+        status="pending",
     )
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    db.add(job)
+    return job
 
 
-async def _run_ingest(
-    character_id: int,
-    conversation_id: int,
-    user_msg: str,
-    assistant_msg: str,
-    provider,
-    model_cfg: dict,
-    source_start_id: int | None,
-    source_end_id: int | None,
-) -> None:
+async def reset_running_jobs() -> int:
+    """启动时回收上次进程残留的 running 任务（崩溃恢复，at-least-once）"""
     async with SessionLocal() as db:
+        result = await db.execute(select(MemoryJob).where(MemoryJob.status == "running"))
+        jobs = list(result.scalars().all())
+        for job in jobs:
+            job.status = "pending"
+        if jobs:
+            await db.commit()
+        return len(jobs)
+
+
+async def _claim_job(db: AsyncSession) -> MemoryJob | None:
+    """取一条到期的 pending 任务并置 running（单 worker 顺序消费，避免游标竞争）"""
+    result = await db.execute(
+        select(MemoryJob)
+        .where(MemoryJob.status == "pending", MemoryJob.run_after <= datetime.now())
+        .order_by(MemoryJob.id)
+        .limit(1)
+    )
+    job = result.scalar_one_or_none()
+    if job is not None:
+        job.status = "running"
+        await db.commit()
+        await db.refresh(job)
+    return job
+
+
+async def _process_job(db: AsyncSession, job: MemoryJob) -> None:
+    character = await db.get(Character, job.character_id)
+    if character is None:
+        return  # 角色已删，任务作废
+    user_message = await db.get(Message, job.source_start_id)
+    assistant_message = await db.get(Message, job.source_end_id)
+    if user_message is None or assistant_message is None:
+        return  # 消息已删，跳过
+    from .chat_service import resolve_provider  # 延迟导入避免循环依赖
+
+    provider, model_cfg = await resolve_provider(db, character)
+    await ingest_turn(
+        db,
+        character,
+        job.conversation_id,
+        user_message.content,
+        assistant_message.content,
+        provider,
+        model_cfg,
+        job.source_start_id,
+        job.source_end_id,
+    )
+
+
+async def run_worker_once(processor=None) -> bool:
+    """处理一条待办任务；返回是否真的处理了任务（供 worker 循环与测试复用）"""
+    async with SessionLocal() as db:
+        job = await _claim_job(db)
+        if job is None:
+            return False
+        handle = processor or _process_job
         try:
-            character = await db.get(Character, character_id)
-            if character is None:
-                return
-            await ingest_turn(
-                db,
-                character,
-                conversation_id,
-                user_msg,
-                assistant_msg,
-                provider,
-                model_cfg,
-                source_start_id,
-                source_end_id,
-            )
-        except Exception as e:  # noqa: BLE001 后台任务失败不影响主流程
-            logger.warning("后台记忆写入失败：%s", e)
+            await handle(db, job)
+            job.status = "done"
+        except Exception as e:  # noqa: BLE001 单任务失败不拖垮 worker
+            job.attempts = (job.attempts or 0) + 1
+            job.last_error = str(e)[:500]
+            if job.attempts >= settings.memory_job_max_attempts:
+                job.status = "failed"
+            else:
+                job.status = "pending"
+                job.run_after = datetime.now() + timedelta(seconds=5 * job.attempts)
+            logger.warning("记忆任务 #%s 处理失败（第 %s 次）：%s", job.id, job.attempts, e)
+        await db.commit()
+        return True
+
+
+async def worker_loop() -> None:
+    """常驻循环：有任务连续处理，空转按间隔轮询"""
+    while True:
+        try:
+            processed = await run_worker_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("记忆 worker 异常：%s", e)
+            processed = False
+        if not processed:
+            await asyncio.sleep(settings.memory_worker_interval)
+
+
+async def start_worker() -> asyncio.Task | None:
+    if not settings.memory_jobs_enabled:
+        return None
+    await reset_running_jobs()
+    return asyncio.create_task(worker_loop())
+
+
+async def stop_worker(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
 
 
 # ---- 记忆管理（MemoryManager API 用）----

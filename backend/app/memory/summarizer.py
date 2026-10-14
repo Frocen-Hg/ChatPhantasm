@@ -16,13 +16,18 @@ def _load_prompt() -> str:
         return ""
 
 
-async def summarize(provider, model_cfg: dict, character_name: str, messages: list) -> str:
-    """把给定消息压缩成摘要；失败返回空串"""
+async def summarize(
+    provider, model_cfg: dict, character_name: str, messages: list, previous: str = ""
+) -> str:
+    """把给定消息压缩成摘要；传入 previous 时做滚动合并（旧摘要 + 新对话）；失败返回空串"""
     system = _load_prompt()
     if not system:
         return ""
     lines = [f"{m.role}：{m.content}" for m in messages]
-    user = f"角色名：{character_name}\n对话记录：\n" + "\n".join(lines)
+    if previous:
+        user = f"角色名：{character_name}\n已有摘要：\n{previous}\n\n新增对话：\n" + "\n".join(lines)
+    else:
+        user = f"角色名：{character_name}\n对话记录：\n" + "\n".join(lines)
 
     parts: list[str] = []
     try:

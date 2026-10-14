@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from .db.models import Character
 from .db.session import SessionLocal, init_db
-from .services import chat_service
+from .services import chat_service, memory_service
 
 
 async def _main() -> None:
@@ -42,6 +42,8 @@ async def _main() -> None:
                 ):
                     print(token, end="", flush=True)
                 print()
+                # 前台处理刚登记的 outbox 任务，避免 CLI 退出丢最后一轮记忆
+                await memory_service.run_worker_once()
             except Exception as e:  # noqa: BLE001
                 print(f"\n（掉线）{e}")
 
