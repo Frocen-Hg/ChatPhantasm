@@ -9,9 +9,15 @@ from .base import EmbeddingProvider, LLMProvider
 class OllamaProvider(LLMProvider, EmbeddingProvider):
     """本地 Ollama 模型接入"""
 
-    def __init__(self, base_url: str = "http://localhost:11434", default_model: str = ""):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        default_model: str = "",
+        default_embed_model: str = "nomic-embed-text",
+    ):
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
+        self.default_embed_model = default_embed_model
 
     async def list_models(self) -> list[str]:
         try:
@@ -49,11 +55,11 @@ class OllamaProvider(LLMProvider, EmbeddingProvider):
                     if delta:
                         yield delta
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{self.base_url}/api/embed",
-                json={"model": "nomic-embed-text", "input": texts},
+                json={"model": model or self.default_embed_model, "input": texts},
             )
             resp.raise_for_status()
             data = resp.json()
