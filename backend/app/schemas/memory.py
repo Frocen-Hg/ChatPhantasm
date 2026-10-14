@@ -22,3 +22,16 @@ class StateUpdate(BaseModel):
     arousal: float | None = None
     current_focus: str | None = None
     relationship: dict | None = None
+
+
+class MemorySearchRequest(BaseModel):
+    character_id: int
+    query: str = ""
+    top_k: int = 6
+    half_life_days: float | None = None
+
+
+class ContextPreviewRequest(BaseModel):
+    character_id: int
+    conversation_id: int | None = None
+    query: str = ""

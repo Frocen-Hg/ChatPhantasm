@@ -2,7 +2,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { useCharactersStore } from '../stores/characters'
 import * as api from '../api/memory'
-import type { CharacterState, Memory } from '../types/memory'
+import type {
+  CharacterState,
+  ContextPreview,
+  Memory,
+  MemorySearchResult
+} from '../types/memory'
 
 const characters = useCharactersStore()
 
@@ -13,6 +18,13 @@ const loading = ref(false)
 const error = ref('')
 const notice = ref('')
 const decaying = ref(false)
+
+const searchQuery = ref('')
+const searchTopK = ref(6)
+const searchResults = ref<MemorySearchResult[]>([])
+const searchLoading = ref(false)
+const searching = ref(false)
+const preview = ref<ContextPreview | null>(null)
 
 const editingState = ref(false)
 const stateMood = ref('')
@@ -190,6 +202,33 @@ async function remove(id: number): Promise<void> {
   await load()
 }
 
+async function search(): Promise<void> {
+  if (!characterId.value || !searchQuery.value.trim()) return
+  searching.value = true
+  error.value = ''
+  try {
+    const res = await api.searchMemories(characterId.value, searchQuery.value.trim(), searchTopK.value)
+    searchResults.value = res.results
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    searching.value = false
+  }
+}
+
+async function loadPreview(): Promise<void> {
+  if (!characterId.value) return
+  searchLoading.value = true
+  error.value = ''
+  try {
+    preview.value = await api.previewContext(characterId.value, searchQuery.value.trim())
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    searchLoading.value = false
+  }
+}
+
 async function decay(): Promise<void> {
   if (!characterId.value) return
   decaying.value = true
@@ -271,6 +310,56 @@ function fmt(dt: string | null): string {
         <div v-if="Object.keys(state.relationship).length" class="muted">
           关系：{{ JSON.stringify(state.relationship) }}
         </div>
+      </template>
+    </div>
+
+    <div class="panel preview">
+      <div class="row spread">
+        <strong>检索预览</strong>
+        <button class="ghost" :disabled="searchLoading" @click="loadPreview">
+          {{ searchLoading ? '组装中…' : '上下文预览' }}
+        </button>
+      </div>
+      <div class="row wrap">
+        <div class="field grow">
+          <label>query（用于关键词检索）</label>
+          <input v-model="searchQuery" placeholder="输入要检索的内容" @keyup.enter="search" />
+        </div>
+        <div class="field" style="width: 100px">
+          <label>top_k</label>
+          <input v-model.number="searchTopK" type="number" min="1" max="20" />
+        </div>
+        <button :disabled="searching || !searchQuery.trim()" @click="search">
+          {{ searching ? '检索中…' : '检索' }}
+        </button>
+      </div>
+
+      <div v-if="searchResults.length" class="search-list">
+        <div v-for="(r, i) in searchResults" :key="r.id" class="search-item">
+          <div class="row spread">
+            <span>
+              <span class="tag">{{ r.layer }}</span>
+              <span class="tag tag-kind">{{ kindLabel(r.kind) }}</span>
+              <span class="muted"> #{{ r.id }}</span>
+            </span>
+            <span class="muted">
+              score {{ r.score }} · 关键词 {{ r.keyword }} · 新近 {{ r.recency }} · {{ r.tokens }} tok
+            </span>
+          </div>
+          <p class="content">{{ r.content }}</p>
+        </div>
+      </div>
+      <div v-else-if="searchQuery && !searching" class="muted">无命中（或尚未检索）</div>
+
+      <template v-if="preview">
+        <div class="muted">
+          预算 {{ preview.budget }} · 已用 {{ preview.total_tokens }}（含历史
+          {{ preview.history.length }} 条）
+        </div>
+        <details v-for="b in preview.blocks" :key="b.name" class="block-item">
+          <summary>[{{ b.name }}] {{ b.tokens }} tok</summary>
+          <pre class="block-content">{{ b.content }}</pre>
+        </details>
       </template>
     </div>
 
@@ -408,11 +497,39 @@ function fmt(dt: string | null): string {
 
 .state,
 .form,
-.filters {
+.filters,
+.preview {
   display: flex;
   flex-direction: column;
   gap: 8px;
   max-width: 720px;
+}
+
+.search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-item {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.block-item {
+  font-size: 13px;
+}
+
+.block-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 6px 0 0;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
 }
 
 .field {

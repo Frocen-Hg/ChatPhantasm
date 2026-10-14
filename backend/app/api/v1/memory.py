@@ -5,7 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.models import Character, CharacterState, Memory
 from ...db.session import get_db
-from ...schemas.memory import MemoryCreate, MemoryUpdate, StateUpdate
+from ...schemas.memory import (
+    ContextPreviewRequest,
+    MemoryCreate,
+    MemorySearchRequest,
+    MemoryUpdate,
+    StateUpdate,
+)
 from ...services import memory_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -107,6 +113,29 @@ async def update_state(
     state = await memory_service.get_or_create_state(db, character_id)
     state = await memory_service.update_state(db, state, payload)
     return _state_to_out(state)
+
+
+@router.post("/search")
+async def search_memories(payload: MemorySearchRequest, db: AsyncSession = Depends(get_db)):
+    """检索预览：只读返回带打分拆解的候选，不更新访问计数、不落库"""
+    if await db.get(Character, payload.character_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    results = await memory_service.search_memories(
+        db, payload.character_id, payload.query, payload.top_k, payload.half_life_days
+    )
+    return {"query": payload.query, "results": results}
+
+
+@router.post("/context-preview")
+async def context_preview(payload: ContextPreviewRequest, db: AsyncSession = Depends(get_db)):
+    """上下文预览：dry-run 组装 system 各区块与 L1 历史，返回 token 占用（不调 LLM、不落库）"""
+    character = await db.get(Character, payload.character_id)
+    if character is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    ctx = await memory_service.assemble_context(
+        db, character, payload.conversation_id or 0, payload.query, touch=False
+    )
+    return ctx
 
 
 @router.post("/characters/{character_id}/decay")

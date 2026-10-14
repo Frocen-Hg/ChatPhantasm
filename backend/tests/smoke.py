@@ -88,6 +88,28 @@ def main() -> None:
         r = client.get(f"/api/v1/memory/characters/{new_id}/memories?kind=preference")
         check("记忆按类型过滤", r.status_code == 200 and len(r.json()) >= 1, r.text)
 
+        r = client.post(
+            "/api/v1/memory/search",
+            json={"character_id": new_id, "query": "聊天气", "top_k": 5},
+        )
+        check(
+            "检索预览 200",
+            r.status_code == 200 and isinstance(r.json().get("results"), list),
+            r.text,
+        )
+
+        r = client.post(
+            "/api/v1/memory/context-preview",
+            json={"character_id": new_id, "query": "你好"},
+        )
+        check(
+            "上下文预览 200",
+            r.status_code == 200
+            and "blocks" in r.json()
+            and any(b["name"] == "角色卡" for b in r.json()["blocks"]),
+            r.text,
+        )
+
         if mid:
             r = client.patch(f"/api/v1/memory/memories/{mid}", json={"importance": 3})
             check("更新记忆", r.status_code == 200 and r.json()["importance"] == 3, r.text)

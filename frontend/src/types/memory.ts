@@ -48,3 +48,42 @@ export interface StateUpdate {
   current_focus?: string
   relationship?: Record<string, unknown>
 }
+
+export interface MemorySearchResult {
+  id: number
+  layer: string
+  kind: string
+  content: string
+  importance: number
+  keyword: number
+  recency: number
+  score: number
+  effective_importance: number
+  tokens: number
+}
+
+export interface MemorySearchResponse {
+  query: string
+  results: MemorySearchResult[]
+}
+
+export interface ContextBlock {
+  name: string
+  content: string
+  tokens: number
+}
+
+export interface ContextHistoryItem {
+  role: string
+  content: string
+  tokens: number
+}
+
+export interface ContextPreview {
+  query: string
+  budget: number
+  total_tokens: number
+  blocks: ContextBlock[]
+  history: ContextHistoryItem[]
+  system: string
+}

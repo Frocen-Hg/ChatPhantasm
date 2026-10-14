@@ -1,7 +1,9 @@
 import type {
   CharacterState,
+  ContextPreview,
   Memory,
   MemoryCreate,
+  MemorySearchResponse,
   MemoryUpdate,
   StateUpdate
 } from '../types/memory'
@@ -43,4 +45,28 @@ export function updateCharacterState(
 
 export function decayMemories(characterId: number): Promise<{ archived: number }> {
   return post<{ archived: number }>(`/memory/characters/${characterId}/decay`, {})
+}
+
+export function searchMemories(
+  characterId: number,
+  query: string,
+  topK = 6
+): Promise<MemorySearchResponse> {
+  return post<MemorySearchResponse>('/memory/search', {
+    character_id: characterId,
+    query,
+    top_k: topK
+  })
+}
+
+export function previewContext(
+  characterId: number,
+  query = '',
+  conversationId?: number | null
+): Promise<ContextPreview> {
+  return post<ContextPreview>('/memory/context-preview', {
+    character_id: characterId,
+    query,
+    conversation_id: conversationId ?? null
+  })
 }

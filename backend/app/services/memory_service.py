@@ -21,7 +21,13 @@ from ..config import settings
 from ..db.models import Character, CharacterState, Memory, MemoryJob, Message
 from ..db.session import SessionLocal
 from ..memory import extractor, summarizer
-from ..memory.retriever import effective_importance, rank_score, similarity
+from ..memory.retriever import (
+    effective_importance,
+    keyword_score,
+    rank_score,
+    recency,
+    similarity,
+)
 from .character_service import compose_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -61,36 +67,79 @@ def _format_state(state: CharacterState | None) -> str:
     return "[内心状态]\n" + "\n".join(bits) if bits else ""
 
 
-async def retrieve(
-    db: AsyncSession,
-    character_id: int,
-    query: str,
-    top_k: int,
-    half_life_days: float,
-) -> list[Memory]:
-    """长期记忆检索：先按 importance 取候选，再关键词 × 重要性 × 衰减排序"""
+async def _candidates(db: AsyncSession, character_id: int) -> list[Memory]:
+    """长期记忆候选：public、未归档、L3/L4（L2 摘要走专属区块，避免重复注入）"""
     result = await db.execute(
         select(Memory)
         .where(
             Memory.character_id == character_id,
             Memory.visibility == "public",
             Memory.decay_at.is_(None),  # 已衰减归档的记忆不参与注入
-            Memory.layer.in_(("L3", "L4")),  # L2 摘要走专属区块，避免重复注入
+            Memory.layer.in_(("L3", "L4")),
         )
         .order_by(Memory.importance.desc(), Memory.id.desc())
         .limit(200)
     )
-    candidates = list(result.scalars().all())
+    return list(result.scalars().all())
+
+
+async def search_memories(
+    db: AsyncSession,
+    character_id: int,
+    query: str,
+    top_k: int,
+    half_life_days: float | None = None,
+) -> list[dict]:
+    """只读检索预览：返回带打分拆解的候选（不更新访问计数、不落库）"""
+    half_life = float(
+        settings.memory_half_life_days if half_life_days is None else half_life_days
+    )
+    candidates = await _candidates(db, character_id)
+    results = []
+    for m in candidates:
+        if query and rank_score(query, m, half_life) <= 0:
+            continue
+        results.append(
+            {
+                "id": m.id,
+                "layer": m.layer,
+                "kind": m.kind,
+                "content": m.content,
+                "importance": m.importance,
+                "keyword": round(keyword_score(query, m.content) if query else 1.0, 4),
+                "recency": round(recency(m.created_at, half_life), 4),
+                "score": round(rank_score(query, m, half_life), 4),
+                "effective_importance": round(
+                    effective_importance(m.importance, m.created_at, half_life), 3
+                ),
+                "tokens": estimate_tokens(m.content),
+            }
+        )
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:top_k]
+
+
+async def retrieve(
+    db: AsyncSession,
+    character_id: int,
+    query: str,
+    top_k: int,
+    half_life_days: float,
+    *,
+    touch: bool = True,
+) -> list[Memory]:
+    """长期记忆检索：关键词 × 重要性 × 衰减排序；touch=False 供预览（不改访问计数）"""
+    candidates = await _candidates(db, character_id)
     scored = [(m, rank_score(query, m, half_life_days)) for m in candidates]
     scored = [(m, s) for m, s in scored if s > 0]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
     picked = [m for m, _ in scored[:top_k]]
-    now = datetime.now()
-    for m in picked:
-        m.access_count = (m.access_count or 0) + 1
-        m.last_access_at = now
-    if picked:
+    if picked and touch:
+        now = datetime.now()
+        for m in picked:
+            m.access_count = (m.access_count or 0) + 1
+            m.last_access_at = now
         await db.commit()
     return picked
 
@@ -154,16 +203,18 @@ def _fit_history(history: list[dict], limit: int) -> list[dict]:
     return list(reversed(picked))
 
 
-async def build_context(
+async def assemble_context(
     db: AsyncSession,
     character: Character,
     conversation_id: int,
     user_content: str,
-) -> list[dict]:
-    """组装本轮请求的完整消息列表：L0 token 预算内按优先级分配各区块。
+    *,
+    touch: bool = True,
+) -> dict:
+    """组装 system 各区块与 L1 历史，返回结构与 token 统计。
 
     分配顺序（被裁剪顺序的逆）：角色卡/内心状态（固定）→ L1 历史 → L3 长期记忆 → L2 摘要。
-    即预算不足时先裁长期记忆、再裁摘要、最后才动历史。
+    即预算不足时先裁长期记忆、再裁摘要、最后才动历史。build_context 与检索预览共用本函数。
     """
     mem_cfg = character.ext.get("memory") or {}
     window = int(mem_cfg.get("window", settings.memory_window))
@@ -179,11 +230,13 @@ async def build_context(
     query = f"{query} {user_content}".strip()
 
     # 固定区块：角色卡 + 内心状态（不裁剪）
-    blocks = ["[角色卡]\n" + compose_system_prompt(character.card)]
-    used = estimate_tokens(blocks[0])
+    blocks: list[tuple[str, str]] = [
+        ("角色卡", "[角色卡]\n" + compose_system_prompt(character.card))
+    ]
+    used = estimate_tokens(blocks[0][1])
     inner = _format_state(await db.get(CharacterState, character.id))
     if inner:
-        blocks.append(inner)
+        blocks.append(("内心状态", inner))
         used += estimate_tokens(inner)
     remaining = max(budget - used, 0)
 
@@ -192,7 +245,7 @@ async def build_context(
     remaining -= sum(estimate_tokens(m["content"]) for m in history)
 
     # L3 长期记忆：在剩余 60% 内按 rank 顺序放入（放不下的跳过）
-    memories = await retrieve(db, character.id, query, top_k, half_life)
+    memories = await retrieve(db, character.id, query, top_k, half_life, touch=touch)
     picked: list[Memory] = []
     cap = int(remaining * 0.6)
     cost = 0
@@ -203,7 +256,7 @@ async def build_context(
         picked.append(m)
         cost += item_cost
     if picked:
-        blocks.append("[长期记忆]\n" + "\n".join(f"- {m.content}" for m in picked))
+        blocks.append(("长期记忆", "[长期记忆]\n" + "\n".join(f"- {m.content}" for m in picked)))
         remaining -= cost
 
     # L2 摘要：用剩余预算，超出则截断
@@ -211,11 +264,37 @@ async def build_context(
     if summary and remaining > 0:
         text = _truncate_to_tokens(summary.content, remaining)
         if text:
-            blocks.append("[会话摘要]\n" + text)
+            blocks.append(("会话摘要", "[会话摘要]\n" + text))
 
+    history_view = [
+        {"role": m["role"], "content": m["content"], "tokens": estimate_tokens(m["content"])}
+        for m in history
+    ]
+    return {
+        "query": query,
+        "budget": budget,
+        "total_tokens": sum(estimate_tokens(text) for _, text in blocks)
+        + sum(item["tokens"] for item in history_view),
+        "blocks": [
+            {"name": name, "content": text, "tokens": estimate_tokens(text)}
+            for name, text in blocks
+        ],
+        "history": history_view,
+        "system": "\n\n".join(text for _, text in blocks),
+    }
+
+
+async def build_context(
+    db: AsyncSession,
+    character: Character,
+    conversation_id: int,
+    user_content: str,
+) -> list[dict]:
+    """组装本轮请求的完整消息列表（L0 token 预算内按优先级分配各区块）"""
+    ctx = await assemble_context(db, character, conversation_id, user_content)
     return [
-        {"role": "system", "content": "\n\n".join(blocks)},
-        *history,
+        {"role": "system", "content": ctx["system"]},
+        *[{"role": h["role"], "content": h["content"]} for h in ctx["history"]],
         {"role": "user", "content": user_content},
     ]
 
