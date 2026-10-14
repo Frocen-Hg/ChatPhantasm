@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.models import Character, CharacterState, Memory
 from ...db.session import get_db
-from ...schemas.memory import MemoryCreate, MemoryUpdate
+from ...schemas.memory import MemoryCreate, MemoryUpdate, StateUpdate
 from ...services import memory_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -93,6 +93,19 @@ async def get_state(character_id: int, db: AsyncSession = Depends(get_db)):
     if await db.get(Character, character_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     state = await memory_service.get_or_create_state(db, character_id)
+    return _state_to_out(state)
+
+
+@router.patch("/characters/{character_id}/state")
+async def update_state(
+    character_id: int,
+    payload: StateUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    if await db.get(Character, character_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    state = await memory_service.get_or_create_state(db, character_id)
+    state = await memory_service.update_state(db, state, payload)
     return _state_to_out(state)
 
 

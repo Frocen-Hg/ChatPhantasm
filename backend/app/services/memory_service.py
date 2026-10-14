@@ -113,33 +113,107 @@ async def latest_summary(
     return result.scalar_one_or_none()
 
 
+def estimate_tokens(text: str) -> int:
+    """粗略 token 估算：CJK 约 1 字 1 token，其余约 4 字符 1 token"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    return cjk + (len(text) - cjk + 3) // 4
+
+
+def _truncate_to_tokens(text: str, limit: int) -> str:
+    """把文本截断到约 limit token（二分，尽量保留前部）"""
+    if estimate_tokens(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if estimate_tokens(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
+
+
+def _fit_history(history: list[dict], limit: int) -> list[dict]:
+    """从最新往旧取历史消息直至超预算；至少保留最新一条（截断）"""
+    picked: list[dict] = []
+    used = 0
+    for m in reversed(history):
+        cost = estimate_tokens(m["content"])
+        if used + cost > limit:
+            break
+        picked.append(m)
+        used += cost
+    if not picked and history:
+        last = history[-1]
+        picked = [
+            {"role": last["role"], "content": _truncate_to_tokens(last["content"], max(limit, 16))}
+        ]
+    return list(reversed(picked))
+
+
 async def build_context(
     db: AsyncSession,
     character: Character,
     conversation_id: int,
     user_content: str,
 ) -> list[dict]:
-    """组装本轮请求的完整消息列表，替换 P0 的「仅角色卡 + 历史」"""
+    """组装本轮请求的完整消息列表：L0 token 预算内按优先级分配各区块。
+
+    分配顺序（被裁剪顺序的逆）：角色卡/内心状态（固定）→ L1 历史 → L3 长期记忆 → L2 摘要。
+    即预算不足时先裁长期记忆、再裁摘要、最后才动历史。
+    """
     mem_cfg = character.ext.get("memory") or {}
     window = int(mem_cfg.get("window", settings.memory_window))
     top_k = int(mem_cfg.get("top_k", settings.memory_top_k))
     half_life = float(mem_cfg.get("half_life_days", settings.memory_half_life_days))
+    budget = int(mem_cfg.get("budget_tokens", settings.context_budget_tokens))
+    recent_n = int(mem_cfg.get("query_recent", settings.memory_query_recent))
 
+    raw_history = await load_history(db, conversation_id, limit=window)
+
+    # 检索 query：最近 N 条消息 + 当前输入，缓解「那它呢？」这类指代检索不到的问题
+    query = " ".join(m["content"] for m in raw_history[-recent_n:] if m["content"])
+    query = f"{query} {user_content}".strip()
+
+    # 固定区块：角色卡 + 内心状态（不裁剪）
     blocks = ["[角色卡]\n" + compose_system_prompt(character.card)]
-
+    used = estimate_tokens(blocks[0])
     inner = _format_state(await db.get(CharacterState, character.id))
     if inner:
         blocks.append(inner)
+        used += estimate_tokens(inner)
+    remaining = max(budget - used, 0)
 
-    memories = await retrieve(db, character.id, user_content, top_k, half_life)
-    if memories:
-        blocks.append("[长期记忆]\n" + "\n".join(f"- {m.content}" for m in memories))
+    # L1 历史：占剩余预算上限 60%，从最新往回取
+    history = _fit_history(raw_history, int(remaining * 0.6))
+    remaining -= sum(estimate_tokens(m["content"]) for m in history)
 
+    # L3 长期记忆：在剩余 60% 内按 rank 顺序放入（放不下的跳过）
+    memories = await retrieve(db, character.id, query, top_k, half_life)
+    picked: list[Memory] = []
+    cap = int(remaining * 0.6)
+    cost = 0
+    for m in memories:
+        item_cost = estimate_tokens(m.content)
+        if cost + item_cost > cap:
+            continue
+        picked.append(m)
+        cost += item_cost
+    if picked:
+        blocks.append("[长期记忆]\n" + "\n".join(f"- {m.content}" for m in picked))
+        remaining -= cost
+
+    # L2 摘要：用剩余预算，超出则截断
     summary = await latest_summary(db, character.id, conversation_id)
-    if summary:
-        blocks.append("[会话摘要]\n" + summary.content)
+    if summary and remaining > 0:
+        text = _truncate_to_tokens(summary.content, remaining)
+        if text:
+            blocks.append("[会话摘要]\n" + text)
 
-    history = await load_history(db, conversation_id, limit=window)
     return [
         {"role": "system", "content": "\n\n".join(blocks)},
         *history,
@@ -394,3 +468,16 @@ async def update_memory(db: AsyncSession, memory: Memory, payload) -> Memory:
 async def delete_memory(db: AsyncSession, memory: Memory) -> None:
     await db.delete(memory)
     await db.commit()
+
+
+async def update_state(db: AsyncSession, state: CharacterState, payload) -> CharacterState:
+    """编辑内心状态（心情/关注/关系）；P3 心跳亦可复用此写入路径"""
+    data = payload.model_dump(exclude_unset=True)
+    relationship = data.pop("relationship", None)
+    for field, value in data.items():
+        setattr(state, field, value)
+    if relationship is not None:
+        state.relationship_json = json.dumps(relationship, ensure_ascii=False)
+    await db.commit()
+    await db.refresh(state)
+    return state

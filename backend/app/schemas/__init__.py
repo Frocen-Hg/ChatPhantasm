@@ -1,6 +1,6 @@
 from .chat import ChatRequest
 from .character import CharacterCreate, CharacterUpdate
-from .memory import MemoryCreate, MemoryUpdate
+from .memory import MemoryCreate, MemoryUpdate, StateUpdate
 from .provider import ProviderCreate, ProviderTest, ProviderUpdate
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "CharacterUpdate",
     "MemoryCreate",
     "MemoryUpdate",
+    "StateUpdate",
     "ProviderCreate",
     "ProviderUpdate",
     "ProviderTest",

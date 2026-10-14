@@ -41,3 +41,10 @@ export interface MemoryUpdate {
   importance?: number
   visibility?: string
 }
+
+export interface StateUpdate {
+  mood?: string
+  arousal?: number
+  current_focus?: string
+  relationship?: Record<string, unknown>
+}

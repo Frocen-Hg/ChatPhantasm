@@ -14,6 +14,13 @@ const error = ref('')
 const notice = ref('')
 const decaying = ref(false)
 
+const editingState = ref(false)
+const stateMood = ref('')
+const stateArousal = ref(0)
+const stateFocus = ref('')
+const stateRelationship = ref('{}')
+const savingState = ref(false)
+
 const layerFilter = ref('')
 const kindFilter = ref('')
 const keyword = ref('')
@@ -87,7 +94,39 @@ async function load(): Promise<void> {
 async function onCharacterChange(): Promise<void> {
   editingId.value = null
   showForm.value = false
+  editingState.value = false
   await load()
+}
+
+function startEditState(): void {
+  if (!state.value) return
+  editingState.value = true
+  stateMood.value = state.value.mood
+  stateArousal.value = state.value.arousal
+  stateFocus.value = state.value.current_focus
+  stateRelationship.value = JSON.stringify(state.value.relationship)
+}
+
+async function saveState(): Promise<void> {
+  if (!characterId.value) return
+  savingState.value = true
+  error.value = ''
+  try {
+    let relationship: Record<string, unknown> = {}
+    if (stateRelationship.value.trim()) relationship = JSON.parse(stateRelationship.value)
+    await api.updateCharacterState(characterId.value, {
+      mood: stateMood.value,
+      arousal: stateArousal.value,
+      current_focus: stateFocus.value,
+      relationship
+    })
+    editingState.value = false
+    await load()
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    savingState.value = false
+  }
 }
 
 const filtered = computed(() => {
@@ -192,12 +231,47 @@ function fmt(dt: string | null): string {
     <div v-if="notice" class="notice">{{ notice }}</div>
 
     <div v-if="state" class="panel state">
-      <strong>内心状态</strong>
-      <div class="muted">心情：{{ state.mood || '—' }} · 关注：{{ state.current_focus || '—' }}</div>
-      <div class="muted">上次交互：{{ fmt(state.last_user_at) }} · 上次心跳：{{ fmt(state.last_beat_at) }}</div>
-      <div v-if="Object.keys(state.relationship).length" class="muted">
-        关系：{{ JSON.stringify(state.relationship) }}
+      <div class="row spread">
+        <strong>内心状态</strong>
+        <button v-if="!editingState" class="ghost" @click="startEditState">编辑</button>
       </div>
+
+      <template v-if="editingState">
+        <div class="row wrap">
+          <div class="field grow">
+            <label>心情</label>
+            <input v-model="stateMood" placeholder="如：好奇、低落" />
+          </div>
+          <div class="field grow">
+            <label>当前关注</label>
+            <input v-model="stateFocus" placeholder="如：用户提到的旅行计划" />
+          </div>
+          <div class="field grow">
+            <label>唤醒度</label>
+            <input v-model.number="stateArousal" type="number" step="0.1" />
+          </div>
+        </div>
+        <div class="field">
+          <label>关系状态（JSON）</label>
+          <textarea v-model="stateRelationship" rows="2" placeholder='{"用户": {"亲密度": 0.6}}' />
+        </div>
+        <div class="row">
+          <button :disabled="savingState" @click="saveState">
+            {{ savingState ? '保存中…' : '保存' }}
+          </button>
+          <button class="ghost" @click="editingState = false">取消</button>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="muted">
+          心情：{{ state.mood || '—' }} · 关注：{{ state.current_focus || '—' }} · 唤醒：{{ state.arousal }}
+        </div>
+        <div class="muted">上次交互：{{ fmt(state.last_user_at) }} · 上次心跳：{{ fmt(state.last_beat_at) }}</div>
+        <div v-if="Object.keys(state.relationship).length" class="muted">
+          关系：{{ JSON.stringify(state.relationship) }}
+        </div>
+      </template>
     </div>
 
     <form v-if="showForm" class="panel form" @submit.prevent="create">

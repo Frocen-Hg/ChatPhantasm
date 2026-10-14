@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     embedding_model: str = ""  # 全局嵌入模型兜底；为空则按 Provider 类型取默认
     # 分层记忆（P1；角色 ext.memory 可逐字段覆盖）
+    context_budget_tokens: int = 3000  # L0 工作记忆 token 预算（system 各区块 + 历史）
+    memory_query_recent: int = 4  # 检索 query 拼接最近 N 条消息
     memory_window: int = 20  # L1 最近 N 轮注入窗口
     memory_top_k: int = 6  # L3 长期记忆检索条数
     memory_half_life_days: float = 30.0  # 时间衰减半衰期

@@ -95,6 +95,22 @@ def main() -> None:
         r = client.get(f"/api/v1/memory/characters/{new_id}/state")
         check("角色状态 200", r.status_code == 200 and r.json()["character_id"] == new_id, r.text)
 
+        r = client.patch(
+            f"/api/v1/memory/characters/{new_id}/state",
+            json={
+                "mood": "好奇",
+                "current_focus": "冒烟测试",
+                "relationship": {"用户": {"亲密度": 0.5}},
+            },
+        )
+        check(
+            "更新内心状态",
+            r.status_code == 200
+            and r.json()["mood"] == "好奇"
+            and r.json()["relationship"]["用户"]["亲密度"] == 0.5,
+            r.text,
+        )
+
         if mid:
             r = client.delete(f"/api/v1/memory/memories/{mid}")
             check("删除记忆", r.status_code == 200, r.text)

@@ -1,4 +1,10 @@
-import type { CharacterState, Memory, MemoryCreate, MemoryUpdate } from '../types/memory'
+import type {
+  CharacterState,
+  Memory,
+  MemoryCreate,
+  MemoryUpdate,
+  StateUpdate
+} from '../types/memory'
 import { del, get, patch, post } from './client'
 
 export function listMemories(
@@ -26,6 +32,13 @@ export function deleteMemory(memoryId: number): Promise<{ ok: boolean }> {
 
 export function getCharacterState(characterId: number): Promise<CharacterState> {
   return get<CharacterState>(`/memory/characters/${characterId}/state`)
+}
+
+export function updateCharacterState(
+  characterId: number,
+  payload: StateUpdate
+): Promise<CharacterState> {
+  return patch<CharacterState>(`/memory/characters/${characterId}/state`, payload)
 }
 
 export function decayMemories(characterId: number): Promise<{ archived: number }> {

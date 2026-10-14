@@ -15,3 +15,10 @@ class MemoryUpdate(BaseModel):
     layer: str | None = None
     importance: float | None = None
     visibility: str | None = None
+
+
+class StateUpdate(BaseModel):
+    mood: str | None = None
+    arousal: float | None = None
+    current_focus: str | None = None
+    relationship: dict | None = None
