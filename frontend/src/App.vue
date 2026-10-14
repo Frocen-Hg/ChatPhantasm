@@ -9,6 +9,7 @@ import { RouterLink, RouterView } from 'vue-router'
       <nav>
         <RouterLink to="/">对话</RouterLink>
         <RouterLink to="/characters">角色卡</RouterLink>
+        <RouterLink to="/memory">记忆</RouterLink>
         <RouterLink to="/settings">设置</RouterLink>
       </nav>
     </aside>
