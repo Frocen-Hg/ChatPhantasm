@@ -18,6 +18,21 @@ export interface CharacterExt {
     temperature?: number
     max_tokens?: number
   }
+  memory?: {
+    window?: number
+    top_k?: number
+    half_life_days?: number
+    summarize_every?: number
+  }
+  heartbeat?: {
+    enabled?: boolean
+    interval_min?: number
+    type?: string[]
+  }
+  knowledge?: {
+    collection?: string
+    top_k?: number
+  }
 }
 
 export interface Character {
