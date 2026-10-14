@@ -13,7 +13,8 @@ from .services import memory_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    if settings.db_auto_create:
+        await init_db()
     await seed_defaults()
     worker = await memory_service.start_worker()
     try:

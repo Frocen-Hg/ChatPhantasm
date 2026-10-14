@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     default_max_tokens: int = 2000
     ollama_base_url: str = "http://localhost:11434"
     database_url: str = f"sqlite+aiosqlite:///{ROOT_DIR / 'data.db'}"
+    # True：启动 create_all 自动建表（SQLite 开发默认）；生产/切 Alembic 时设 false 并 alembic upgrade head
+    db_auto_create: bool = True
     cors_origins: str = "http://localhost:5173"
     embedding_model: str = ""  # 全局嵌入模型兜底；为空则按 Provider 类型取默认
     # 分层记忆（P1；角色 ext.memory 可逐字段覆盖）
