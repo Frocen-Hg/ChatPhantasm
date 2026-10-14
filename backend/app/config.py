@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     memory_half_life_days: float = 30.0  # 时间衰减半衰期
     memory_decay_min: float = 0.5  # 有效重要度低于此值则归档（decay_at）
     memory_dedupe_threshold: float = 0.6  # 记忆去重相似度阈值（关键词 Jaccard）
+    memory_sanitize_enabled: bool = True  # 注入前中和不可信文本（伪区块标题/控制字符/代码围栏）
+    memory_item_max_chars: int = 600  # 单条记忆注入 system 的最大字符数
     summarize_every: int = 10  # 每积累 N 条「未摘要」新消息触发一次滚动摘要
     # 记忆写入任务（outbox + worker）
     memory_jobs_enabled: bool = True
