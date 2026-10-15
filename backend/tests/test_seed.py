@@ -21,7 +21,8 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(Path(_tmp.name) / 'seed.db'
 try:
     from sqlalchemy import select  # noqa: E402
 
-    from app.db.models import Character, ProviderConfig  # noqa: E402
+    from app.config import settings  # noqa: E402
+    from app.db.models import Character, ModelRoute, ProviderConfig  # noqa: E402
     from app.db.session import SessionLocal, engine, init_db  # noqa: E402
     from app.seed import seed_defaults  # noqa: E402
 except Exception:
@@ -70,6 +71,27 @@ async def run() -> None:
         chars = (await db.execute(select(Character))).scalars().all()
         provs = (await db.execute(select(ProviderConfig))).scalars().all()
         check("幂等：重复 seed 仍为 1 角色 + 1 provider", len(chars) == 1 and len(provs) == 1)
+
+        # --- 场景 2.5：下线模型名修复（deepseek-chat/reasoner → 当前默认）---
+        prov = (await db.execute(select(ProviderConfig))).scalar_one()
+        prov.models_json = json.dumps(["deepseek-chat", "custom-model"])
+        route = (
+            await db.execute(select(ModelRoute).where(ModelRoute.capability == "chat"))
+        ).scalar_one()
+        route.model = "deepseek-reasoner"
+        await db.commit()
+        await seed_defaults()
+        _fresh()
+        prov = (await db.execute(select(ProviderConfig))).scalar_one()
+        route = (
+            await db.execute(select(ModelRoute).where(ModelRoute.capability == "chat"))
+        ).scalar_one()
+        check(
+            "下线模型名替换为默认",
+            prov.models == [settings.default_model, "custom-model"]
+            and route.model == settings.default_model,
+            f"models={prov.models} route={route.model}",
+        )
 
         # --- 场景 3：悬空引用修复 ---
         db.add(

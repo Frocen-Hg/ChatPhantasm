@@ -359,7 +359,7 @@ async function testEmbed(id: number): Promise<void> {
             <label>模型</label>
             <input
               v-model="routeForms[cap.key].model"
-              :placeholder="cap.key === 'embedding' ? 'nomic-embed-text' : 'deepseek-chat'"
+              :placeholder="cap.key === 'embedding' ? 'nomic-embed-text' : 'deepseek-v4-pro'"
             />
           </div>
 
@@ -402,7 +402,7 @@ async function testEmbed(id: number): Promise<void> {
       </div>
       <div class="field">
         <label>模型列表（逗号分隔）</label>
-        <input v-model="modelsText" placeholder="deepseek-chat, deepseek-reasoner" />
+        <input v-model="modelsText" placeholder="deepseek-v4-pro, deepseek-flash" />
       </div>
       <div class="field">
         <label>嵌入模型（独立于聊天模型，可留空用类型默认）</label>

@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     app_name: str = "ChatPhantasm"
     deepseek_api_key: str = ""
     base_url: str = "https://api.deepseek.com"
-    default_model: str = "deepseek-chat"
+    default_model: str = "deepseek-v4-pro"  # 旧名 deepseek-chat/reasoner 已下线
+    llm_timeout_seconds: float = 120.0  # LLM 请求超时（上游挂起时避免无限等待）
     default_temperature: float = 1.3
     default_max_tokens: int = 2000
     ollama_base_url: str = "http://localhost:11434"
