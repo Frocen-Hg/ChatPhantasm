@@ -149,6 +149,82 @@ class MemoryJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class KbDocument(Base):
+    """知识库文档：SQL 为唯一事实源（分块持久化），向量库只是索引"""
+
+    __tablename__ = "kb_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    title: Mapped[str] = mapped_column(String(128), default="未命名文档")
+    source_type: Mapped[str] = mapped_column(String(16), default="text")  # text | file
+    source_uri: Mapped[str] = mapped_column(String(255), default="")  # 文件名（溯源/展示）
+    scope: Mapped[str] = mapped_column(String(16), default="world")  # world|self|relation|rule
+    visibility: Mapped[str] = mapped_column(String(8), default="public")  # public|private
+    chunk_size: Mapped[int] = mapped_column(Integer, default=800)
+    chunk_overlap: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|indexed|failed
+    error: Mapped[str] = mapped_column(Text, default="")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class KbChunk(Base):
+    __tablename__ = "kb_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("kb_documents.id"), index=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)  # 文档内序号
+    content: Mapped[str] = mapped_column(Text)
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 向量库 id
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class KbLore(Base):
+    """lore 条目（World Info 风格）：关键词触发 / 常驻注入"""
+
+    __tablename__ = "kb_lore"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    keys_json: Mapped[str] = mapped_column(Text, default="[]")  # 触发关键词
+    content: Mapped[str] = mapped_column(Text)
+    constant: Mapped[bool] = mapped_column(Boolean, default=False)  # 常驻注入
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # 越大越靠前
+    scan_depth: Mapped[int] = mapped_column(Integer, default=6)  # 只扫最近 N 条消息
+    scope: Mapped[str] = mapped_column(String(16), default="world")
+    visibility: Mapped[str] = mapped_column(String(8), default="public")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def keys(self) -> list[str]:
+        try:
+            return [str(k) for k in json.loads(self.keys_json or "[]")]
+        except json.JSONDecodeError:
+            return []
+
+
+class KbJob(Base):
+    """知识库索引任务（outbox）：与文档同事务落库，由 kb worker 可靠消费"""
+
+    __tablename__ = "kb_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("kb_documents.id"), index=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class CharacterState(Base):
     """角色内心状态（单行），供独白/心跳读写；P1 仅建表，P3 填充"""
 

@@ -1,5 +1,6 @@
 from .chat import ChatRequest
 from .character import CharacterCreate, CharacterUpdate
+from .kb import DocumentCreate
 from .memory import (
     ContextPreviewRequest,
     MemoryCreate,
@@ -14,6 +15,7 @@ __all__ = [
     "CharacterCreate",
     "CharacterUpdate",
     "ContextPreviewRequest",
+    "DocumentCreate",
     "MemoryCreate",
     "MemorySearchRequest",
     "MemoryUpdate",

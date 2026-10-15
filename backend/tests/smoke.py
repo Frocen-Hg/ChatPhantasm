@@ -151,6 +151,39 @@ def main() -> None:
             r.text,
         )
 
+        # 3.6 知识库文档（P2b）
+        r = client.post(
+            f"/api/v1/kb/characters/{new_id}/documents",
+            json={
+                "title": "世界观设定",
+                "text": "# 世界\n这是一段世界观设定。\n\n# 角色\n影子住在终端里。",
+                "scope": "world",
+            },
+        )
+        check(
+            "创建知识库文档",
+            r.status_code == 200 and r.json().get("chunk_count", 0) >= 1,
+            r.text,
+        )
+        doc_id = r.json()["id"] if r.status_code == 200 else None
+
+        r = client.get(f"/api/v1/kb/characters/{new_id}/documents")
+        check("知识库文档列表 200", r.status_code == 200 and len(r.json()) >= 1, r.text)
+
+        if doc_id:
+            r = client.get(f"/api/v1/kb/documents/{doc_id}/chunks")
+            check(
+                "文档分块列表",
+                r.status_code == 200 and len(r.json()) >= 1,
+                r.text,
+            )
+
+            r = client.post(f"/api/v1/kb/documents/{doc_id}/reindex")
+            check("文档重建索引 200", r.status_code == 200, r.text)
+
+            r = client.delete(f"/api/v1/kb/documents/{doc_id}")
+            check("删除文档 200", r.status_code == 200, r.text)
+
         # 4. 聊天错误路径（不触发真实 LLM）
         r = client.post("/api/v1/chat", json={"character_id": 999999, "content": "hi"})
         check("聊天-角色不存在返回 404", r.status_code == 404, r.text)

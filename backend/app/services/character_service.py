@@ -3,7 +3,16 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.models import Character, CharacterState, Memory, MemoryJob
+from ..db.models import (
+    Character,
+    CharacterState,
+    KbChunk,
+    KbDocument,
+    KbJob,
+    KbLore,
+    Memory,
+    MemoryJob,
+)
 from . import vector_service
 
 DEFAULT_CARD_VERSION = "1"
@@ -83,10 +92,14 @@ async def update_character(
 
 
 async def delete_character(db: AsyncSession, character: Character) -> None:
-    """删除角色并清理其记忆/内心状态/待办任务（表间无级联，需显式清理）"""
+    """删除角色并清理其记忆/内心状态/待办任务/知识库（表间无级联，需显式清理）"""
     await db.execute(delete(Memory).where(Memory.character_id == character.id))
     await db.execute(delete(CharacterState).where(CharacterState.character_id == character.id))
     await db.execute(delete(MemoryJob).where(MemoryJob.character_id == character.id))
+    await db.execute(delete(KbChunk).where(KbChunk.character_id == character.id))
+    await db.execute(delete(KbJob).where(KbJob.character_id == character.id))
+    await db.execute(delete(KbLore).where(KbLore.character_id == character.id))
+    await db.execute(delete(KbDocument).where(KbDocument.character_id == character.id))
     character_id = character.id
     await db.delete(character)
     await db.commit()

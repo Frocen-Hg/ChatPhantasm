@@ -26,6 +26,10 @@ def memory_collection(character_id: int) -> str:
     return f"char{character_id}_mem"
 
 
+def kb_collection(character_id: int) -> str:
+    return f"char{character_id}_kb"
+
+
 def get_store() -> VectorStore | None:
     global _store
     if not settings.chroma_enabled:
@@ -147,11 +151,79 @@ async def delete_memory_vectors(character_id: int, ids: list[int]) -> None:
     await store.delete(memory_collection(character_id), [str(i) for i in ids])
 
 
+async def index_chunks(db: AsyncSession, character_id: int, chunks: list, document=None) -> int:
+    """把知识库分块写入向量集合并回填 embedding_id；document 提供 scope/visibility 元数据"""
+    if not chunks or not await store_available():
+        return 0
+    store = get_store()
+    if store is None:
+        return 0
+    vectors = await embed_texts(db, [c.content for c in chunks])
+    if vectors is None:
+        return 0
+    scope = getattr(document, "scope", "world") if document is not None else "world"
+    visibility = getattr(document, "visibility", "public") if document is not None else "public"
+    await store.upsert(
+        kb_collection(character_id),
+        [str(c.id) for c in chunks],
+        vectors,
+        [c.content for c in chunks],
+        [
+            {
+                "character_id": character_id,
+                "document_id": c.document_id,
+                "seq": c.seq,
+                "scope": scope,
+                "visibility": visibility,
+            }
+            for c in chunks
+        ],
+    )
+    for c in chunks:
+        c.embedding_id = str(c.id)
+    await db.commit()
+    return len(chunks)
+
+
+async def delete_document_vectors(character_id: int, chunk_ids: list[int]) -> None:
+    if not chunk_ids or not await store_available():
+        return
+    store = get_store()
+    if store is None:
+        return
+    await store.delete(kb_collection(character_id), [str(i) for i in chunk_ids])
+
+
+async def search_kb_vectors(
+    db: AsyncSession, character_id: int, query: str, top_k: int | None = None
+) -> dict[int, float]:
+    """知识库语义召回：返回 {chunk_id: 相似度}"""
+    if not query or not await store_available():
+        return {}
+    store = get_store()
+    if store is None:
+        return {}
+    vectors = await embed_texts(db, [query])
+    if not vectors:
+        return {}
+    hits = await store.query(
+        kb_collection(character_id), vectors[0], top_k or settings.kb_top_k
+    )
+    out: dict[int, float] = {}
+    for hit in hits:
+        try:
+            out[int(hit.id)] = hit.score
+        except ValueError:
+            continue
+    return out
+
+
 async def drop_character(character_id: int) -> None:
-    """删除角色时清理其向量集合（记忆；P2b 知识库集合接入后一并清理）"""
+    """删除角色时清理其向量集合（记忆 + 知识库）"""
     if not await store_available():
         return
     store = get_store()
     if store is None:
         return
-    await store.drop(memory_collection(character_id))
+    for collection in (memory_collection(character_id), kb_collection(character_id)):
+        await store.drop(collection)
