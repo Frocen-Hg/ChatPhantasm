@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
+
+const route = useRoute()
 </script>
 
 <template>
   <div class="layout">
-    <aside class="sidebar">
+    <aside v-if="!route.meta.bare" class="sidebar">
       <div class="brand">ChatPhantasm</div>
       <nav>
         <RouterLink to="/">对话</RouterLink>

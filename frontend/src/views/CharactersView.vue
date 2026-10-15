@@ -33,6 +33,7 @@ async function remove(id: number, name: string): Promise<void> {
         </div>
         <div class="row actions">
           <button @click="router.push(`/characters/${c.id}`)">编辑</button>
+          <button class="ghost" @click="router.push(`/characters/${c.id}/knowledge`)">知识库</button>
           <button class="danger" @click="remove(c.id, c.name)">删除</button>
         </div>
       </div>
