@@ -1,6 +1,6 @@
 from .chat import ChatRequest
 from .character import CharacterCreate, CharacterUpdate
-from .kb import DocumentCreate
+from .kb import DocumentCreate, KbSearchRequest, LoreCreate, LoreUpdate
 from .memory import (
     ContextPreviewRequest,
     MemoryCreate,
@@ -16,6 +16,9 @@ __all__ = [
     "CharacterUpdate",
     "ContextPreviewRequest",
     "DocumentCreate",
+    "KbSearchRequest",
+    "LoreCreate",
+    "LoreUpdate",
     "MemoryCreate",
     "MemorySearchRequest",
     "MemoryUpdate",

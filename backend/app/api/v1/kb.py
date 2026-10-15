@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import settings
-from ...db.models import Character, KbDocument
+from ...db.models import Character, KbDocument, KbLore
 from ...db.session import get_db
-from ...schemas.kb import DocumentCreate
-from ...services import kb_service
+from ...schemas.kb import DocumentCreate, KbSearchRequest, LoreCreate, LoreUpdate
+from ...services import kb_service, memory_service
 
 router = APIRouter(prefix="/kb", tags=["knowledge"])
 
@@ -123,3 +123,61 @@ async def reindex_document(document_id: int, db: AsyncSession = Depends(get_db))
     document = await _require_document(db, document_id)
     document = await kb_service.reindex_document(db, document)
     return await kb_service.document_dict(db, document)
+
+
+# ---- lore 条目 ----
+
+
+@router.get("/characters/{character_id}/lore")
+async def list_lore(character_id: int, db: AsyncSession = Depends(get_db)):
+    await _require_character(db, character_id)
+    lores = await kb_service.list_lore(db, character_id)
+    return [kb_service.lore_dict(lore) for lore in lores]
+
+
+@router.post("/characters/{character_id}/lore")
+async def create_lore(
+    character_id: int,
+    payload: LoreCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_character(db, character_id)
+    lore = await kb_service.create_lore(db, character_id, payload)
+    return kb_service.lore_dict(lore)
+
+
+@router.patch("/lore/{lore_id}")
+async def update_lore(
+    lore_id: int,
+    payload: LoreUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    lore = await db.get(KbLore, lore_id)
+    if lore is None:
+        raise HTTPException(status_code=404, detail="lore 不存在")
+    lore = await kb_service.update_lore(db, lore, payload)
+    return kb_service.lore_dict(lore)
+
+
+@router.delete("/lore/{lore_id}")
+async def delete_lore(lore_id: int, db: AsyncSession = Depends(get_db)):
+    lore = await db.get(KbLore, lore_id)
+    if lore is None:
+        raise HTTPException(status_code=404, detail="lore 不存在")
+    await kb_service.delete_lore(db, lore)
+    return {"ok": True}
+
+
+@router.post("/search")
+async def search_knowledge(payload: KbSearchRequest, db: AsyncSession = Depends(get_db)):
+    """检索预览：lore 命中（constant/关键词）+ 向量召回 + 组装区块（不调 LLM、不落库）"""
+    character = await _require_character(db, payload.character_id)
+    recent_texts = None
+    if payload.conversation_id:
+        history = await memory_service.load_history(
+            db, payload.conversation_id, limit=settings.kb_scan_depth
+        )
+        recent_texts = [m["content"] for m in history] + [payload.query]
+    return await kb_service.search_knowledge(
+        db, character, payload.query, recent_texts, payload.budget_tokens
+    )
