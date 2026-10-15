@@ -196,6 +196,35 @@ async def test_delete_and_drop(db) -> None:
     check("删除角色清理向量集合", vector_service.memory_collection(char.id) not in store.data)
 
 
+async def test_sync_and_reindex(db) -> None:
+    from app.schemas.memory import MemoryCreate, MemoryUpdate
+
+    char = await _new_character(db, "索引同步")
+    store = vector_service.get_store()
+    col = vector_service.memory_collection(char.id)
+
+    memory = await memory_service.create_memory(
+        db, char.id, MemoryCreate(content="喜欢潜水", kind="fact", layer="L3", importance=7)
+    )
+    check("新建记忆自动索引", await store.count(col) == 1, f"count={await store.count(col)}")
+
+    await memory_service.update_memory(db, memory, MemoryUpdate(visibility="private"))
+    check("改私有后移出索引", await store.count(col) == 0, f"count={await store.count(col)}")
+
+    await memory_service.update_memory(
+        db, memory, MemoryUpdate(visibility="public", content="喜欢水肺潜水")
+    )
+    check("改回公开后重建索引", await store.count(col) == 1, f"count={await store.count(col)}")
+
+    await vector_service.drop_character(char.id)
+    indexed = await memory_service.reindex_memories(db, char.id)
+    check(
+        "重建索引恢复集合",
+        indexed == 1 and await store.count(col) == 1,
+        f"indexed={indexed}",
+    )
+
+
 async def run() -> None:
     await init_db()
     await seed_defaults()
@@ -208,6 +237,7 @@ async def run() -> None:
             await test_keyword_only_without_vector(db)
             await test_graceful_degradation(db)
             await test_delete_and_drop(db)
+            await test_sync_and_reindex(db)
     finally:
         vector_service.reset()
 

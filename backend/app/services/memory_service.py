@@ -649,11 +649,25 @@ async def list_memories(
     return list(result.scalars().all())
 
 
+async def _sync_memory_vector(db: AsyncSession, memory: Memory) -> None:
+    """记忆内容/可见性变化后同步向量：可检索则重建，否则移除"""
+    searchable = (
+        memory.visibility == "public"
+        and memory.decay_at is None
+        and memory.layer in ("L3", "L4")
+    )
+    if searchable:
+        await vector_service.index_memories(db, memory.character_id, [memory])
+    else:
+        await vector_service.delete_memory_vectors(memory.character_id, [memory.id])
+
+
 async def create_memory(db: AsyncSession, character_id: int, payload) -> Memory:
     memory = Memory(character_id=character_id, **payload.model_dump())
     db.add(memory)
     await db.commit()
     await db.refresh(memory)
+    await _sync_memory_vector(db, memory)
     return memory
 
 
@@ -662,7 +676,17 @@ async def update_memory(db: AsyncSession, memory: Memory, payload) -> Memory:
         setattr(memory, field, value)
     await db.commit()
     await db.refresh(memory)
+    await _sync_memory_vector(db, memory)
     return memory
+
+
+async def reindex_memories(db: AsyncSession, character_id: int) -> int:
+    """重建角色向量索引：清空集合后索引全部可检索记忆（补历史数据/换嵌入模型用）"""
+    if not await vector_service.store_available():
+        return 0
+    candidates = await _candidates(db, character_id)
+    await vector_service.drop_character(character_id)
+    return await vector_service.index_memories(db, character_id, candidates)
 
 
 async def delete_memory(db: AsyncSession, memory: Memory) -> None:

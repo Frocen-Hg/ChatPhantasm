@@ -12,7 +12,7 @@ from ...schemas.memory import (
     MemoryUpdate,
     StateUpdate,
 )
-from ...services import memory_service
+from ...services import memory_service, vector_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -136,6 +136,16 @@ async def context_preview(payload: ContextPreviewRequest, db: AsyncSession = Dep
         db, character, payload.conversation_id or 0, payload.query, touch=False
     )
     return ctx
+
+
+@router.post("/characters/{character_id}/reindex")
+async def reindex_memories(character_id: int, db: AsyncSession = Depends(get_db)):
+    """重建该角色的记忆向量索引（换嵌入模型或补历史数据后使用）"""
+    if await db.get(Character, character_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    available = await vector_service.store_available()
+    indexed = await memory_service.reindex_memories(db, character_id)
+    return {"indexed": indexed, "available": available}
 
 
 @router.post("/characters/{character_id}/decay")

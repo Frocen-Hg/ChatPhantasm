@@ -18,6 +18,7 @@ const loading = ref(false)
 const error = ref('')
 const notice = ref('')
 const decaying = ref(false)
+const reindexing = ref(false)
 
 const searchQuery = ref('')
 const searchTopK = ref(6)
@@ -229,6 +230,23 @@ async function loadPreview(): Promise<void> {
   }
 }
 
+async function reindex(): Promise<void> {
+  if (!characterId.value) return
+  reindexing.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await api.reindexMemories(characterId.value)
+    notice.value = res.available
+      ? `已重建向量索引：${res.indexed} 条`
+      : '向量库不可用（未启动 Chroma 或未配置嵌入），已跳过'
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    reindexing.value = false
+  }
+}
+
 async function decay(): Promise<void> {
   if (!characterId.value) return
   decaying.value = true
@@ -262,6 +280,9 @@ function fmt(dt: string | null): string {
         <button class="ghost" @click="load">刷新</button>
         <button class="ghost" :disabled="decaying" @click="decay">
           {{ decaying ? '清理中…' : '清理衰减' }}
+        </button>
+        <button class="ghost" :disabled="reindexing" @click="reindex">
+          {{ reindexing ? '重建中…' : '重建向量索引' }}
         </button>
         <button @click="showForm = !showForm">{{ showForm ? '取消' : '新建记忆' }}</button>
       </div>
