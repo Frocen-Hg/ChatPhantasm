@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     memory_sanitize_enabled: bool = True  # 注入前中和不可信文本（伪区块标题/控制字符/代码围栏）
     memory_item_max_chars: int = 600  # 单条记忆注入 system 的最大字符数
     summarize_every: int = 10  # 每积累 N 条「未摘要」新消息触发一次滚动摘要
+    # 向量层（P2，Chroma 服务模式；不可用时自动降级为纯 SQL 检索）
+    chroma_enabled: bool = True
+    chroma_url: str = "http://localhost:8001"  # docker 内为 http://chroma:8000
+    chroma_auth_token: str = ""
+    vector_weight: float = 0.4  # 混合检索中向量权重（0=纯关键词，1=纯向量）
+    vector_top_k: int = 12  # 向量召回候选数
     # 记忆写入任务（outbox + worker）
     memory_jobs_enabled: bool = True
     memory_worker_interval: float = 2.0  # worker 空转轮询间隔（秒）

@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import Character, CharacterState, Memory, MemoryJob
+from . import vector_service
 
 DEFAULT_CARD_VERSION = "1"
 
@@ -86,5 +87,8 @@ async def delete_character(db: AsyncSession, character: Character) -> None:
     await db.execute(delete(Memory).where(Memory.character_id == character.id))
     await db.execute(delete(CharacterState).where(CharacterState.character_id == character.id))
     await db.execute(delete(MemoryJob).where(MemoryJob.character_id == character.id))
+    character_id = character.id
     await db.delete(character)
     await db.commit()
+    # 清理向量集合（不可用时静默跳过）
+    await vector_service.drop_character(character_id)

@@ -56,6 +56,7 @@ export interface MemorySearchResult {
   content: string
   importance: number
   keyword: number
+  vector: number | null
   recency: number
   score: number
   effective_importance: number

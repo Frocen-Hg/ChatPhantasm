@@ -343,7 +343,8 @@ function fmt(dt: string | null): string {
               <span class="muted"> #{{ r.id }}</span>
             </span>
             <span class="muted">
-              score {{ r.score }} · 关键词 {{ r.keyword }} · 新近 {{ r.recency }} · {{ r.tokens }} tok
+              score {{ r.score }} · 关键词 {{ r.keyword }} · 向量 {{ r.vector ?? '—' }} · 新近
+              {{ r.recency }} · {{ r.tokens }} tok
             </span>
           </div>
           <p class="content">{{ r.content }}</p>

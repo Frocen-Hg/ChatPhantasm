@@ -13,6 +13,13 @@ services:
       timeout: 3s
       retries: 10
 
+  chroma:
+    image: chromadb/chroma:1.5.9
+    volumes:
+      - chromadata:/data
+    ports:
+      - "8001:8000"
+
   backend:
     build:
       context: .
@@ -20,9 +27,12 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chatphantasm
+      CHROMA_URL: http://chroma:8000
     depends_on:
       db:
         condition: service_healthy
+      chroma:
+        condition: service_started
     ports:
       - "8000:8000"
 
@@ -37,3 +47,4 @@ services:
 
 volumes:
   pgdata:
+  chromadata:

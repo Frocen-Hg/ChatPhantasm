@@ -29,6 +29,7 @@ from ..memory.retriever import (
     recency,
     similarity,
 )
+from . import vector_service
 from .character_service import compose_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -107,9 +108,12 @@ async def search_memories(
         settings.memory_half_life_days if half_life_days is None else half_life_days
     )
     candidates = await _candidates(db, character_id)
+    vectors = await vector_service.search_memory_vectors(db, character_id, query) if query else {}
+    weight = settings.vector_weight
     results = []
     for m in candidates:
-        if query and rank_score(query, m, half_life) <= 0:
+        score = rank_score(query, m, half_life, vector=vectors.get(m.id), vector_weight=weight)
+        if query and score <= 0:
             continue
         results.append(
             {
@@ -119,8 +123,9 @@ async def search_memories(
                 "content": m.content,
                 "importance": m.importance,
                 "keyword": round(keyword_score(query, m.content) if query else 1.0, 4),
+                "vector": round(vectors[m.id], 4) if m.id in vectors else None,
                 "recency": round(recency(m.created_at, half_life), 4),
-                "score": round(rank_score(query, m, half_life), 4),
+                "score": round(score, 4),
                 "effective_importance": round(
                     effective_importance(m.importance, m.created_at, half_life), 3
                 ),
@@ -140,9 +145,22 @@ async def retrieve(
     *,
     touch: bool = True,
 ) -> list[Memory]:
-    """长期记忆检索：关键词 × 重要性 × 衰减排序；touch=False 供预览（不改访问计数）"""
+    """长期记忆混合检索：关键词+向量 × 重要性 × 衰减；touch=False 供预览（不改访问计数）"""
     candidates = await _candidates(db, character_id)
-    scored = [(m, rank_score(query, m, half_life_days)) for m in candidates]
+    vectors = await vector_service.search_memory_vectors(db, character_id, query) if query else {}
+    scored = [
+        (
+            m,
+            rank_score(
+                query,
+                m,
+                half_life_days,
+                vector=vectors.get(m.id),
+                vector_weight=settings.vector_weight,
+            ),
+        )
+        for m in candidates
+    ]
     scored = [(m, s) for m, s in scored if s > 0]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
@@ -333,28 +351,32 @@ async def ingest_turn(
         provider, model_cfg, character.name, user_msg, assistant_msg
     )
     threshold = float(mem_cfg.get("dedupe_threshold", settings.memory_dedupe_threshold))
+    changed: list[Memory] = []
     for it in items:
         existing = await _find_duplicate(db, character.id, it["kind"], it["content"], threshold)
         if existing is not None:
             _merge_memory(existing, it["content"], it["importance"])
+            changed.append(existing)
         else:
-            db.add(
-                Memory(
-                    character_id=character.id,
-                    conversation_id=conversation_id,
-                    layer="L3",
-                    kind=it["kind"],
-                    content=it["content"],
-                    importance=it["importance"],
-                    visibility="public",
-                    source_start_id=source_start_id,
-                    source_end_id=source_end_id,
-                )
+            memory = Memory(
+                character_id=character.id,
+                conversation_id=conversation_id,
+                layer="L3",
+                kind=it["kind"],
+                content=it["content"],
+                importance=it["importance"],
+                visibility="public",
+                source_start_id=source_start_id,
+                source_end_id=source_end_id,
             )
+            db.add(memory)
+            changed.append(memory)
 
     state = await get_or_create_state(db, character.id)
     state.last_user_at = datetime.now()
     await db.commit()
+    # 向量化（Chroma 不可达或未配置嵌入时静默降级为纯 SQL 检索）
+    await vector_service.index_memories(db, character.id, changed)
 
     every = int(mem_cfg.get("summarize_every", settings.summarize_every))
     if every > 0:
@@ -472,14 +494,16 @@ async def decay_memories(
         select(Memory).where(Memory.character_id == character_id, Memory.decay_at.is_(None))
     )
     now = datetime.now()
-    archived = 0
+    archived_ids: list[int] = []
     for m in result.scalars().all():
         if effective_importance(m.importance, m.created_at, half_life) < threshold:
             m.decay_at = now
-            archived += 1
-    if archived:
+            archived_ids.append(m.id)
+    if archived_ids:
         await db.commit()
-    return archived
+        # 归档即移出向量索引，避免已衰减记忆仍被语义召回
+        await vector_service.delete_memory_vectors(character_id, archived_ids)
+    return len(archived_ids)
 
 
 def enqueue_ingest(
@@ -642,8 +666,10 @@ async def update_memory(db: AsyncSession, memory: Memory, payload) -> Memory:
 
 
 async def delete_memory(db: AsyncSession, memory: Memory) -> None:
+    character_id, memory_id = memory.character_id, memory.id
     await db.delete(memory)
     await db.commit()
+    await vector_service.delete_memory_vectors(character_id, [memory_id])
 
 
 async def update_state(db: AsyncSession, state: CharacterState, payload) -> CharacterState:
