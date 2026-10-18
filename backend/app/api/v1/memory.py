@@ -12,9 +12,14 @@ from ...schemas.memory import (
     MemoryUpdate,
     StateUpdate,
 )
-from ...services import memory_service
+from ...services import memory_service, vector_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+
+
+def _searchable(m: Memory) -> bool:
+    """是否应参与向量检索（L2 走专属摘要区块；private/已归档不参与）"""
+    return m.visibility == "public" and m.decay_at is None and m.layer in ("L3", "L4")
 
 
 def _to_out(m: Memory) -> dict:
@@ -28,6 +33,8 @@ def _to_out(m: Memory) -> dict:
         "importance": m.importance,
         "visibility": m.visibility,
         "access_count": m.access_count,
+        # 三态：True=已索引；False=应索引但缺失（可重建/等待补齐）；None=不适用（L2/private/已归档）
+        "indexed": (m.embedding_id is not None) if _searchable(m) else None,
         "source_start_id": m.source_start_id,
         "source_end_id": m.source_end_id,
         "decay_at": m.decay_at,
@@ -136,6 +143,16 @@ async def context_preview(payload: ContextPreviewRequest, db: AsyncSession = Dep
         db, character, payload.conversation_id or 0, payload.query, touch=False
     )
     return ctx
+
+
+@router.post("/characters/{character_id}/reindex")
+async def reindex_memories(character_id: int, db: AsyncSession = Depends(get_db)):
+    """重建该角色的记忆向量索引（换嵌入模型或补历史数据后使用）"""
+    if await db.get(Character, character_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    available = await vector_service.store_available()
+    indexed = await memory_service.reindex_memories(db, character_id)
+    return {"indexed": indexed, "available": available}
 
 
 @router.post("/characters/{character_id}/decay")

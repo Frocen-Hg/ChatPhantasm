@@ -89,6 +89,16 @@ def main() -> None:
         check("记忆按类型过滤", r.status_code == 200 and len(r.json()) >= 1, r.text)
 
         r = client.post(
+            f"/api/v1/memory/characters/{new_id}/memories",
+            json={"content": "滚动摘要测试", "layer": "L2", "kind": "summary"},
+        )
+        check(
+            "L2 摘要标记为不参与索引（indexed=null）",
+            r.status_code == 200 and r.json()["indexed"] is None,
+            r.text,
+        )
+
+        r = client.post(
             "/api/v1/memory/search",
             json={"character_id": new_id, "query": "聊天气", "top_k": 5},
         )
@@ -143,6 +153,92 @@ def main() -> None:
             r.status_code == 200 and "archived" in r.json(),
             r.text,
         )
+
+        r = client.post(f"/api/v1/memory/characters/{new_id}/reindex")
+        check(
+            "重建向量索引 200",
+            r.status_code == 200 and "indexed" in r.json() and "available" in r.json(),
+            r.text,
+        )
+
+        # 3.6 知识库文档（P2b）
+        r = client.post(
+            f"/api/v1/kb/characters/{new_id}/documents",
+            json={
+                "title": "世界观设定",
+                "text": "# 世界\n这是一段世界观设定。\n\n# 角色\n影子住在终端里。",
+                "scope": "world",
+            },
+        )
+        check(
+            "创建知识库文档",
+            r.status_code == 200 and r.json().get("chunk_count", 0) >= 1,
+            r.text,
+        )
+        doc_id = r.json()["id"] if r.status_code == 200 else None
+
+        r = client.get(f"/api/v1/kb/characters/{new_id}/documents")
+        check("知识库文档列表 200", r.status_code == 200 and len(r.json()) >= 1, r.text)
+
+        if doc_id:
+            r = client.get(f"/api/v1/kb/documents/{doc_id}/chunks")
+            check(
+                "文档分块列表",
+                r.status_code == 200 and len(r.json()) >= 1,
+                r.text,
+            )
+
+            r = client.post(f"/api/v1/kb/documents/{doc_id}/reindex")
+            check("文档重建索引 200", r.status_code == 200, r.text)
+
+            r = client.delete(f"/api/v1/kb/documents/{doc_id}")
+            check("删除文档 200", r.status_code == 200, r.text)
+
+        # 3.7 lore 与知识库检索（P2b-2）
+        r = client.post(
+            f"/api/v1/kb/characters/{new_id}/lore",
+            json={"content": "影子讨厌被叫小白", "keys": ["小白", "影子"], "priority": 5},
+        )
+        check(
+            "创建 lore 条目",
+            r.status_code == 200 and r.json()["keys"] == ["小白", "影子"],
+            r.text,
+        )
+        lore_id = r.json()["id"] if r.status_code == 200 else None
+
+        r = client.post(
+            f"/api/v1/kb/characters/{new_id}/lore",
+            json={"content": "世界观：终端世界", "constant": True},
+        )
+        check("创建常驻 lore", r.status_code == 200 and r.json()["constant"] is True, r.text)
+
+        r = client.get(f"/api/v1/kb/characters/{new_id}/lore")
+        check("lore 列表 200", r.status_code == 200 and len(r.json()) >= 2, r.text)
+
+        r = client.post(
+            "/api/v1/kb/search",
+            json={"character_id": new_id, "query": "小白是谁"},
+        )
+        body = r.json() if r.status_code == 200 else {}
+        check("知识库检索预览 200", r.status_code == 200 and "lore" in body, r.text)
+        check(
+            "关键词命中 lore",
+            any(x.get("matched") == "小白" for x in body.get("lore", [])),
+            r.text,
+        )
+
+        if lore_id:
+            r = client.patch(f"/api/v1/kb/lore/{lore_id}", json={"priority": 9})
+            check("更新 lore", r.status_code == 200 and r.json()["priority"] == 9, r.text)
+            r = client.delete(f"/api/v1/kb/lore/{lore_id}")
+            check("删除 lore", r.status_code == 200, r.text)
+
+        r = client.post(
+            "/api/v1/memory/context-preview",
+            json={"character_id": new_id, "query": "你好"},
+        )
+        names = [b["name"] for b in r.json().get("blocks", [])] if r.status_code == 200 else []
+        check("上下文预览含知识库区块", "知识库" in names, f"names={names}")
 
         # 4. 聊天错误路径（不触发真实 LLM）
         r = client.post("/api/v1/chat", json={"character_id": 999999, "content": "hi"})

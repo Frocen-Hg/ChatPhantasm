@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     app_name: str = "ChatPhantasm"
     deepseek_api_key: str = ""
     base_url: str = "https://api.deepseek.com"
-    default_model: str = "deepseek-chat"
+    default_model: str = "deepseek-v4-pro"  # 旧名 deepseek-chat/reasoner 已下线
+    llm_timeout_seconds: float = 120.0  # LLM 请求超时（上游挂起时避免无限等待）
     default_temperature: float = 1.3
     default_max_tokens: int = 2000
     ollama_base_url: str = "http://localhost:11434"
@@ -49,10 +50,27 @@ class Settings(BaseSettings):
     memory_sanitize_enabled: bool = True  # 注入前中和不可信文本（伪区块标题/控制字符/代码围栏）
     memory_item_max_chars: int = 600  # 单条记忆注入 system 的最大字符数
     summarize_every: int = 10  # 每积累 N 条「未摘要」新消息触发一次滚动摘要
+    # 知识库（P2b；ext.knowledge 可逐角色覆盖）
+    kb_enabled: bool = True
+    kb_chunk_size: int = 800  # 分块字符数
+    kb_chunk_overlap: int = 100  # 分块重叠字符数
+    kb_max_chunks_per_doc: int = 500  # 单文档分块上限
+    kb_upload_max_bytes: int = 2_000_000  # 上传文件大小上限（约 2MB）
+    kb_top_k: int = 4  # 知识库语义召回条数（P2b-2）
+    kb_scan_depth: int = 6  # lore 关键词匹配扫描的最近消息数（P2b-2）
+    kb_job_max_attempts: int = 3
+    kb_worker_interval: float = 2.0
+    # 向量层（P2，Chroma 服务模式；不可用时自动降级为纯 SQL 检索）
+    chroma_enabled: bool = True
+    chroma_url: str = "http://localhost:8001"  # docker 内为 http://chroma:8000
+    chroma_auth_token: str = ""
+    vector_weight: float = 0.4  # 混合检索中向量权重（0=纯关键词，1=纯向量）
+    vector_top_k: int = 12  # 向量召回候选数
     # 记忆写入任务（outbox + worker）
     memory_jobs_enabled: bool = True
     memory_worker_interval: float = 2.0  # worker 空转轮询间隔（秒）
     memory_job_max_attempts: int = 3  # 失败重试上限，超过置 failed
+    memory_index_sweep_interval: float = 60.0  # 后台补齐缺失向量索引的扫描间隔（秒）
 
 
 settings = Settings()

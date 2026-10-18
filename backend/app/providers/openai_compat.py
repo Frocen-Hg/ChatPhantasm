@@ -12,14 +12,17 @@ class OpenAICompatProvider(LLMProvider, EmbeddingProvider):
         self,
         api_key: str = "",
         base_url: str = "",
-        default_model: str = "deepseek-chat",
+        default_model: str = "deepseek-v4-pro",
         default_embed_model: str = "text-embedding-3-small",
+        timeout: float = 120.0,
     ):
         self.default_model = default_model
         self.default_embed_model = default_embed_model
         self.client = AsyncOpenAI(
             api_key=api_key or "sk-placeholder",
             base_url=base_url or None,
+            timeout=timeout,
+            max_retries=1,  # 上游挂起时避免重试放大等待
         )
 
     async def list_models(self) -> list[str]:

@@ -24,7 +24,8 @@ def build_provider(provider: ProviderConfig) -> LLMProvider:
     return OpenAICompatProvider(
         api_key=provider.api_key or "",
         base_url=provider.base_url,
-        default_model=provider.models[0] if provider.models else "deepseek-chat",
+        default_model=provider.models[0] if provider.models else settings.default_model,
+        timeout=settings.llm_timeout_seconds,
     )
 
 
@@ -49,8 +50,9 @@ def build_embedding_provider(provider: ProviderConfig) -> EmbeddingProvider:
     return OpenAICompatProvider(
         api_key=provider.api_key or "",
         base_url=provider.base_url,
-        default_model=provider.models[0] if provider.models else "deepseek-chat",
+        default_model=provider.models[0] if provider.models else settings.default_model,
         default_embed_model=embed_model,
+        timeout=settings.llm_timeout_seconds,
     )
 
 

@@ -8,7 +8,7 @@ from .api.v1.router import api_router
 from .config import ROOT_DIR, settings
 from .db.session import init_db
 from .seed import seed_defaults
-from .services import memory_service
+from .services import kb_service, memory_service
 
 
 @asynccontextmanager
@@ -17,13 +17,15 @@ async def lifespan(app: FastAPI):
         await init_db()
     await seed_defaults()
     worker = await memory_service.start_worker()
+    kb_worker = await kb_service.start_worker()
     try:
         yield
     finally:
         await memory_service.stop_worker(worker)
+        await kb_service.stop_worker(kb_worker)
 
 
-app = FastAPI(title="ChatPhantasm", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="ChatPhantasm", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

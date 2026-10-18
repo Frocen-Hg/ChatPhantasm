@@ -40,13 +40,28 @@ def recency(created_at: datetime | None, half_life_days: float) -> float:
     return math.exp(-age_days / max(half_life_days, 1e-6))
 
 
-def rank_score(query: str, memory, half_life_days: float) -> float:
-    """综合排序分：关键词 × 重要性 × 新鲜度。查询无命中直接返回 0（过滤）"""
+def rank_score(
+    query: str,
+    memory,
+    half_life_days: float,
+    *,
+    vector: float | None = None,
+    vector_weight: float = 0.4,
+) -> float:
+    """综合排序分：相关性（关键词与向量混合）× 重要性 × 新鲜度。
+
+    传入 vector（0-1 相似度）时按 vector_weight 融合，实现语义召回；
+    未传时退化为纯关键词。查询无命中且无向量分直接返回 0（过滤）。
+    """
     kw = keyword_score(query, memory.content) if query else 1.0
-    if query and kw <= 0:
+    relevance = kw
+    if vector is not None:
+        v = max(0.0, min(float(vector), 1.0))
+        relevance = (1.0 - vector_weight) * kw + vector_weight * v
+    if query and relevance <= 0:
         return 0.0
     importance = max(0.0, min(float(memory.importance or 0.0), 10.0)) / 10.0
-    return (0.2 + 0.8 * kw) * importance * recency(memory.created_at, half_life_days)
+    return (0.2 + 0.8 * relevance) * importance * recency(memory.created_at, half_life_days)
 
 
 def similarity(a: str, b: str) -> float:
