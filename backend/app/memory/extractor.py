@@ -36,14 +36,20 @@ async def extract_memories(
     provider,
     model_cfg: dict,
     character_name: str,
-    user_msg: str,
+    user_msg: str | None,
     assistant_msg: str,
 ) -> list[dict]:
-    """调用 LLM 抽取值得长期记住的条目；失败时返回空列表，不阻塞主流程"""
+    """调用 LLM 抽取值得长期记住的条目；失败时返回空列表，不阻塞主流程。
+
+    user_msg=None 表示心跳主动消息（无用户侧），按角色独白语境抽取。
+    """
     system = _load_prompt()
     if not system:
         return []
-    user = f"角色名：{character_name}\n用户：{user_msg}\n角色：{assistant_msg}"
+    if user_msg is None:
+        user = f"角色名：{character_name}\n（角色主动发起的消息，用户尚未回复）\n角色：{assistant_msg}"
+    else:
+        user = f"角色名：{character_name}\n用户：{user_msg}\n角色：{assistant_msg}"
 
     parts: list[str] = []
     try:

@@ -71,6 +71,23 @@ class Settings(BaseSettings):
     memory_worker_interval: float = 2.0  # worker 空转轮询间隔（秒）
     memory_job_max_attempts: int = 3  # 失败重试上限，超过置 failed
     memory_index_sweep_interval: float = 60.0  # 后台补齐缺失向量索引的扫描间隔（秒）
+    # 心跳/内心独白（P3a；角色 ext.heartbeat 覆盖全局，heartbeat_jobs 为其物化配置）
+    heartbeat_enabled: bool = True  # 心跳功能总开关（worker 是否启动；每角色仍默认关闭）
+    heartbeat_interval_min: int = 60  # 默认心跳间隔（分钟）
+    heartbeat_daily_limit: int = 12  # 默认每日上限（次）
+    heartbeat_quiet_start: str = "23:00"  # 默认静默时段开始（本地时区）
+    heartbeat_quiet_end: str = "08:00"  # 默认静默时段结束
+    heartbeat_budget_tokens: int = 800  # introspect 上下文独立 token 预算（小于聊天）
+    heartbeat_max_tokens: int = 400  # 单次独白生成上限
+    heartbeat_worker_interval: float = 30.0  # 调度扫描间隔（秒）
+    heartbeat_job_max_attempts: int = 2  # 连续失败退避上限，超过回到正常节奏
+    heartbeat_l3_min_importance: float = 7.0  # introspect 注入的高重要度 L3 阈值
+    # 主动消息（P3b；ext.heartbeat 可覆盖后两项）
+    heartbeat_proactive_min_idle_min: int = 180  # 距上次用户消息超过该时长才考虑主动开口
+    heartbeat_proactive_probability: float = 0.6  # 满足条件后本轮转为主动消息的概率（抖动）
+    # WebSocket（P3b）：仅心跳事件推送；无用户体系，token 为空表示不校验（本机/内网）
+    ws_token: str = ""  # 预留鉴权位（非空时连接需携带 ?token=）
+    ws_ping_interval: float = 30.0  # 服务端空闲 ping 间隔（秒）
 
 
 settings = Settings()

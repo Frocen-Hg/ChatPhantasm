@@ -32,6 +32,12 @@ const CAPABILITIES = [
     label: '嵌入',
     hint: '向量化（记忆/知识库 RAG）',
     tip: 'DeepSeek 无 embeddings 端点，需单独指定嵌入 Provider/模型（如 Ollama nomic-embed-text、OpenAI text-embedding-3-small）'
+  },
+  {
+    key: 'heartbeat',
+    label: '心跳',
+    hint: '内心独白/主动消息（可选，未绑定回落聊天）',
+    tip: '可选功能位：绑定后心跳生成独立走该 Provider/模型；未绑定或禁用时按聊天解析（角色 ext.model → chat 路由 → 全局默认）。'
   }
 ]
 
