@@ -302,12 +302,20 @@ async def delete_lore(db: AsyncSession, lore: KbLore) -> None:
 
 
 def _lore_hits(
-    lores: list[KbLore], recent_texts: list[str], include_private: bool = False
+    lores: list[KbLore],
+    recent_texts: list[str],
+    include_private: bool = False,
+    scopes: set[str] | None = None,
 ) -> list[tuple[KbLore, str]]:
-    """确定性通道：constant 必中；否则按各自 scan_depth 扫最近消息做关键词匹配"""
+    """确定性通道：constant 必中；否则按各自 scan_depth 扫最近消息做关键词匹配
+
+    scopes 非空时只命中指定 scope（introspect 用，限定 self/world）。
+    """
     hits: list[tuple[KbLore, str]] = []
     for lore in lores:
         if not include_private and lore.visibility != "public":
+            continue
+        if scopes is not None and lore.scope not in scopes:
             continue
         if lore.constant:
             hits.append((lore, "constant"))
@@ -325,9 +333,14 @@ def _lore_hits(
 
 
 async def _chunk_hits(
-    db: AsyncSession, character_id: int, query: str, top_k: int, include_private: bool = False
+    db: AsyncSession,
+    character_id: int,
+    query: str,
+    top_k: int,
+    include_private: bool = False,
+    scopes: set[str] | None = None,
 ) -> list[tuple[KbChunk, float, KbDocument]]:
-    """语义通道：向量召回分块，过滤 visibility（SQL 为准）"""
+    """语义通道：向量召回分块，过滤 visibility 与 scope（SQL 为准）"""
     scores = await vector_service.search_kb_vectors(db, character_id, query, top_k)
     if not scores:
         return []
@@ -338,6 +351,8 @@ async def _chunk_hits(
         if document is None:
             continue
         if not include_private and document.visibility != "public":
+            continue
+        if scopes is not None and document.scope not in scopes:
             continue
         out.append((chunk, scores[chunk.id], document))
     out.sort(key=lambda item: item[1], reverse=True)
@@ -394,8 +409,12 @@ async def build_knowledge_block(
     budget_tokens: int,
     *,
     include_private: bool = False,
+    scopes: set[str] | None = None,
 ) -> tuple[str, int]:
-    """组装 [知识库] 区块（lore 命中 + 语义召回）；返回 (文本, token 数)"""
+    """组装 [知识库] 区块（lore 命中 + 语义召回）；返回 (文本, token 数)
+
+    scopes 非空时只取指定 scope（introspect 用，限定 self/world）。
+    """
     if not settings.kb_enabled or budget_tokens <= 0:
         return "", 0
     kb_cfg = character.ext.get("knowledge") or {}
@@ -403,8 +422,8 @@ async def build_knowledge_block(
         return "", 0
     top_k = int(kb_cfg.get("top_k", settings.kb_top_k))
     lores = await list_lore(db, character.id, enabled_only=True)
-    lore_items = _lore_hits(lores, recent_texts, include_private)
-    chunk_items = await _chunk_hits(db, character.id, query, top_k, include_private)
+    lore_items = _lore_hits(lores, recent_texts, include_private, scopes)
+    chunk_items = await _chunk_hits(db, character.id, query, top_k, include_private, scopes)
     text, tokens, _lore_ids, _chunk_ids = _compose_block(lore_items, chunk_items, budget_tokens)
     return text, tokens
 

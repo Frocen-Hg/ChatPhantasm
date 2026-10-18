@@ -6,7 +6,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true }
+      // ws: true 让开发模式下 /api/v1/ws 的 WebSocket 升级也走代理
+      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true, ws: true }
     }
   }
 })

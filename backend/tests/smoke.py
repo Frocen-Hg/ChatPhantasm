@@ -26,6 +26,7 @@ try:
     from app.main import app  # noqa: E402
     from app.config import ROOT_DIR  # noqa: E402
     from app.db.session import engine  # noqa: E402
+    from app.services import chat_service, heartbeat_service  # noqa: E402
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -240,6 +241,152 @@ def main() -> None:
         names = [b["name"] for b in r.json().get("blocks", [])] if r.status_code == 200 else []
         check("上下文预览含知识库区块", "知识库" in names, f"names={names}")
 
+        # 3.8 心跳（P3a）：配置 CRUD + 手动触发（注入 FakeProvider，不调真实 LLM）
+        r = client.get(f"/api/v1/heartbeat/characters/{new_id}")
+        check(
+            "心跳配置 200 且默认关闭",
+            r.status_code == 200 and r.json()["enabled"] is False,
+            r.text,
+        )
+        check(
+            "未启用时标记 blocked_reason=disabled",
+            r.status_code == 200 and r.json().get("blocked_reason") == "disabled",
+            r.text,
+        )
+
+        r = client.put(
+            f"/api/v1/heartbeat/characters/{new_id}",
+            json={
+                "enabled": True,
+                "interval_min": 30,
+                "daily_limit": 5,
+                "quiet_hours": {"start": "", "end": ""},
+            },
+        )
+        check(
+            "更新心跳配置",
+            r.status_code == 200 and r.json()["enabled"] is True and r.json()["interval_min"] == 30,
+            r.text,
+        )
+
+        r = client.put(
+            f"/api/v1/heartbeat/characters/{new_id}",
+            json={"quiet_hours": {"start": "25:00", "end": "08:00"}},
+        )
+        check("非法静默时段返回 400", r.status_code == 400, r.text)
+
+        r = client.get(f"/api/v1/characters/{new_id}")
+        check(
+            "心跳配置同步 ext.heartbeat",
+            r.status_code == 200
+            and r.json()["ext"].get("heartbeat", {}).get("interval_min") == 30,
+            r.text,
+        )
+
+        class _FakeMonologueLLM:
+            async def chat(self, messages, *, model, temperature, max_tokens):
+                for ch in (
+                    '{"monologue": "冒烟独白", "message": "冒烟消息", "mood": "平静", '
+                    '"current_focus": "冒烟", "arousal": 0.3}'
+                ):
+                    yield ch
+
+        async def _fake_resolver(db, character):
+            return _FakeMonologueLLM(), {"model": "fake"}
+
+        heartbeat_service.set_resolver(_fake_resolver)
+        r = client.post(f"/api/v1/heartbeat/characters/{new_id}/run", json={"type": "monologue"})
+        run_body = r.json() if r.status_code == 200 else {}
+        check(
+            "手动触发独白成功",
+            r.status_code == 200 and run_body.get("status") == "done",
+            r.text,
+        )
+        check("手动试跑标记 is_manual", run_body.get("is_manual") is True, r.text)
+
+        r = client.get(f"/api/v1/heartbeat/characters/{new_id}/runs")
+        check(
+            "心跳运行记录 200",
+            r.status_code == 200
+            and len(r.json()) >= 1
+            and r.json()[0]["id"] == run_body.get("id")
+            and r.json()[0].get("is_manual") is True,
+            r.text,
+        )
+
+        r = client.get(f"/api/v1/memory/characters/{new_id}/memories?layer=L4&kind=monologue")
+        check(
+            "独白写入 L4 private 记忆",
+            r.status_code == 200
+            and len(r.json()) == 1
+            and r.json()[0]["visibility"] == "private"
+            and r.json()[0]["content"] == "冒烟独白",
+            r.text,
+        )
+
+        r = client.get(f"/api/v1/memory/characters/{new_id}/state")
+        check(
+            "独白更新内心状态",
+            r.status_code == 200 and r.json()["mood"] == "平静" and r.json()["last_beat_at"],
+            r.text,
+        )
+
+        # 3.9 WS 心跳事件推送（P3b）：订阅 + ping/pong + 主动消息离线回放
+        with client.websocket_connect(f"/api/v1/ws?character_id={new_id}") as ws:
+            ws.send_text("ping")
+            check("WS ping → pong", ws.receive_json() == {"type": "pong"}, "")
+
+            r = client.post(f"/api/v1/heartbeat/characters/{new_id}/run", json={"type": "monologue"})
+            event = ws.receive_json()
+            check(
+                "WS 收到独白事件",
+                r.status_code == 200
+                and event.get("type") == "heartbeat"
+                and event["data"]["type"] == "monologue"
+                and event["data"]["monologue"] == "冒烟独白",
+                f"{r.text} / {event}",
+            )
+
+            # 主动消息会生成 memory_jobs，记忆 worker 需要 provider：替换为 Fake 避免真实调用
+            class _FakeExtractLLM:
+                async def chat(self, messages, *, model, temperature, max_tokens):
+                    for ch in "[]":
+                        yield ch
+
+            async def _fake_memory_resolve(db, character, **kwargs):
+                return _FakeExtractLLM(), {"model": "fake"}
+
+            chat_service.resolve_provider = _fake_memory_resolve
+
+            r = client.post(f"/api/v1/heartbeat/characters/{new_id}/run", json={"type": "proactive"})
+            body = r.json() if r.status_code == 200 else {}
+            event = ws.receive_json()
+            check(
+                "WS 收到主动消息事件",
+                r.status_code == 200
+                and body.get("status") == "done"
+                and event["data"]["type"] == "proactive"
+                and event["data"]["message"] == "冒烟消息",
+                f"{r.text} / {event}",
+            )
+
+        r = client.get(f"/api/v1/conversations?character_id={new_id}")
+        conv_id = r.json()[0]["id"] if r.status_code == 200 and r.json() else None
+        check(
+            "主动消息会话可见（离线回放）",
+            r.status_code == 200 and conv_id is not None,
+            r.text,
+        )
+        if conv_id:
+            r = client.get(f"/api/v1/conversations/{conv_id}/messages")
+            check(
+                "历史回放包含主动消息",
+                r.status_code == 200 and any(m["content"] == "冒烟消息" for m in r.json()),
+                r.text,
+            )
+
+        heartbeat_service.set_resolver(None)
+
         # 4. 聊天错误路径（不触发真实 LLM）
         r = client.post("/api/v1/chat", json={"character_id": 999999, "content": "hi"})
         check("聊天-角色不存在返回 404", r.status_code == 404, r.text)
@@ -294,9 +441,21 @@ def main() -> None:
         )
         check("绑定 chat 路由", r.status_code == 200 and r.json()["model"] == "smoke-model", r.text)
 
+        r = client.put(
+            "/api/v1/providers/routes/heartbeat",
+            json={"provider_id": pid, "model": "smoke-model"},
+        )
+        check(
+            "绑定 heartbeat 功能位路由",
+            r.status_code == 200 and r.json()["capability"] == "heartbeat",
+            r.text,
+        )
+
         r = client.get("/api/v1/providers/routes")
         chat_route = next((x for x in r.json() if x["capability"] == "chat"), {})
         check("chat 路由指向临时 provider", chat_route.get("provider_id") == pid, r.text)
+        hb_route = next((x for x in r.json() if x["capability"] == "heartbeat"), {})
+        check("heartbeat 路由指向临时 provider", hb_route.get("provider_id") == pid, r.text)
 
         r = client.delete(f"/api/v1/providers/{pid}")
         check("删除 provider", r.status_code == 200, r.text)

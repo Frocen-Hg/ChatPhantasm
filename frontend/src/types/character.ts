@@ -27,7 +27,13 @@ export interface CharacterExt {
   heartbeat?: {
     enabled?: boolean
     interval_min?: number
-    type?: string[]
+    types?: string[] // monologue | proactive
+    quiet_hours?: { start?: string; end?: string }
+    daily_limit?: number
+    jitter_ratio?: number
+    show_monologue?: boolean
+    proactive_min_idle_min?: number
+    proactive_probability?: number
   }
   knowledge?: {
     collection?: string
