@@ -89,6 +89,16 @@ def main() -> None:
         check("记忆按类型过滤", r.status_code == 200 and len(r.json()) >= 1, r.text)
 
         r = client.post(
+            f"/api/v1/memory/characters/{new_id}/memories",
+            json={"content": "滚动摘要测试", "layer": "L2", "kind": "summary"},
+        )
+        check(
+            "L2 摘要标记为不参与索引（indexed=null）",
+            r.status_code == 200 and r.json()["indexed"] is None,
+            r.text,
+        )
+
+        r = client.post(
             "/api/v1/memory/search",
             json={"character_id": new_id, "query": "聊天气", "top_k": 5},
         )

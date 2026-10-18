@@ -17,6 +17,11 @@ from ...services import memory_service, vector_service
 router = APIRouter(prefix="/memory", tags=["memory"])
 
 
+def _searchable(m: Memory) -> bool:
+    """是否应参与向量检索（L2 走专属摘要区块；private/已归档不参与）"""
+    return m.visibility == "public" and m.decay_at is None and m.layer in ("L3", "L4")
+
+
 def _to_out(m: Memory) -> dict:
     return {
         "id": m.id,
@@ -28,7 +33,8 @@ def _to_out(m: Memory) -> dict:
         "importance": m.importance,
         "visibility": m.visibility,
         "access_count": m.access_count,
-        "indexed": m.embedding_id is not None,  # 是否已写入向量索引
+        # 三态：True=已索引；False=应索引但缺失（可重建/等待补齐）；None=不适用（L2/private/已归档）
+        "indexed": (m.embedding_id is not None) if _searchable(m) else None,
         "source_start_id": m.source_start_id,
         "source_end_id": m.source_end_id,
         "decay_at": m.decay_at,

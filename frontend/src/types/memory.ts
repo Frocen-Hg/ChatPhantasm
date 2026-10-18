@@ -8,7 +8,7 @@ export interface Memory {
   importance: number
   visibility: string // public | private
   access_count: number
-  indexed?: boolean // 是否已写入向量索引（后端补齐前为 false）
+  indexed?: boolean | null // true=已索引；false=应索引但缺失；null=不适用（L2/private/已归档）
   source_start_id?: number | null
   source_end_id?: number | null
   decay_at?: string | null
