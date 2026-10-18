@@ -29,12 +29,14 @@ from ..db.models import (
     HeartbeatRun,
     Memory,
     Message,
+    ProviderConfig,
 )
 from ..db.session import SessionLocal
 from ..memory import monologue, proactive
 from ..memory.tokens import estimate_tokens
 from . import memory_service, ws_service
 from .chat_service import get_or_create_conversation, resolve_provider
+from .provider_service import build_provider, get_route
 
 logger = logging.getLogger(__name__)
 
@@ -311,8 +313,24 @@ def set_resolver(resolver) -> None:
 
 
 async def _resolve_llm(db, character: Character):
+    """心跳生成模型的解析：优先 `model_routes['heartbeat']`（可选功能位），未绑定回落聊天解析"""
     if _resolver_override is not None:
         return await _resolver_override(db, character)
+    route = await get_route(db, "heartbeat")
+    if route is not None and route.enabled:
+        provider = await db.get(ProviderConfig, route.provider_id)
+        if provider is not None:
+            model_cfg: dict = {}
+            if route.model:
+                model_cfg["model"] = route.model
+            for key, value in route.params.items():
+                model_cfg.setdefault(key, value)
+            model_cfg.setdefault(
+                "model", provider.models[0] if provider.models else settings.default_model
+            )
+            model_cfg.setdefault("temperature", settings.default_temperature)
+            model_cfg.setdefault("max_tokens", settings.default_max_tokens)
+            return build_provider(provider), model_cfg
     return await resolve_provider(db, character)
 
 

@@ -432,9 +432,21 @@ def main() -> None:
         )
         check("绑定 chat 路由", r.status_code == 200 and r.json()["model"] == "smoke-model", r.text)
 
+        r = client.put(
+            "/api/v1/providers/routes/heartbeat",
+            json={"provider_id": pid, "model": "smoke-model"},
+        )
+        check(
+            "绑定 heartbeat 功能位路由",
+            r.status_code == 200 and r.json()["capability"] == "heartbeat",
+            r.text,
+        )
+
         r = client.get("/api/v1/providers/routes")
         chat_route = next((x for x in r.json() if x["capability"] == "chat"), {})
         check("chat 路由指向临时 provider", chat_route.get("provider_id") == pid, r.text)
+        hb_route = next((x for x in r.json() if x["capability"] == "heartbeat"), {})
+        check("heartbeat 路由指向临时 provider", hb_route.get("provider_id") == pid, r.text)
 
         r = client.delete(f"/api/v1/providers/{pid}")
         check("删除 provider", r.status_code == 200, r.text)

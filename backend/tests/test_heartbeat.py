@@ -33,11 +33,14 @@ try:
         Memory,
         MemoryJob,
         Message,
+        ModelRoute,
+        ProviderConfig,
     )
     from app.db.session import SessionLocal, engine, init_db  # noqa: E402
     from app.schemas.heartbeat import HeartbeatConfigUpdate  # noqa: E402
     from app.seed import seed_defaults  # noqa: E402
     from app.services import heartbeat_service, memory_service, ws_service  # noqa: E402
+    from app.services.provider_service import upsert_route  # noqa: E402
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -674,6 +677,45 @@ async def test_proactive_creates_conversation(db) -> None:
     )
 
 
+async def test_heartbeat_route(db) -> None:
+    """心跳功能位路由（P3c）：绑定 model_routes['heartbeat'] 优先，未绑定/禁用回落聊天"""
+    heartbeat_service.set_resolver(None)
+    char = await new_character(db, "心跳路由")
+
+    _provider, cfg = await heartbeat_service._resolve_llm(db, char)
+    check(
+        "未绑定 heartbeat 路由 → 回落聊天解析",
+        cfg["model"] == settings.default_model,
+        f"model={cfg.get('model')}",
+    )
+
+    p = ProviderConfig(
+        name="hb-prov",
+        type="openai_compat",
+        base_url="http://127.0.0.1:9",
+        api_key="k",
+        models_json=json.dumps(["hb-default"]),
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    await upsert_route(db, "heartbeat", p, model="hb-model")
+    await db.commit()
+
+    _provider, cfg = await heartbeat_service._resolve_llm(db, char)
+    check("绑定 heartbeat 路由优先", cfg["model"] == "hb-model", f"model={cfg.get('model')}")
+
+    route = await db.get(ModelRoute, "heartbeat")
+    route.enabled = False
+    await db.commit()
+    _provider, cfg = await heartbeat_service._resolve_llm(db, char)
+    check(
+        "路由禁用 → 回落聊天解析",
+        cfg["model"] == settings.default_model,
+        f"model={cfg.get('model')}",
+    )
+
+
 class FakeSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -833,6 +875,7 @@ async def run() -> None:
         await test_worker_backoff(db)
         await test_reset_running(db)
         await test_manual_run_unsupported(db)
+        await test_heartbeat_route(db)
         await test_ws_manager()
 
     await engine.dispose()

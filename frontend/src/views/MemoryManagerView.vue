@@ -38,6 +38,9 @@ const layerFilter = ref('')
 const kindFilter = ref('')
 const keyword = ref('')
 
+// 内心活动时间线（P3c）：L4 独白按时间正序查看
+const timelineMode = ref(false)
+
 const showForm = ref(false)
 const formContent = ref('')
 const formKind = ref('fact')
@@ -108,7 +111,17 @@ async function onCharacterChange(): Promise<void> {
   editingId.value = null
   showForm.value = false
   editingState.value = false
+  timelineMode.value = false
   await load()
+}
+
+function toggleTimeline(): void {
+  timelineMode.value = !timelineMode.value
+  if (timelineMode.value) {
+    layerFilter.value = 'L4'
+    kindFilter.value = 'monologue'
+    void load()
+  }
 }
 
 function startEditState(): void {
@@ -149,6 +162,10 @@ const filtered = computed(() => {
 })
 
 const unindexedCount = computed(() => memories.value.filter((m) => m.indexed === false).length)
+
+const timelineItems = computed(() =>
+  [...filtered.value].sort((a, b) => a.created_at.localeCompare(b.created_at))
+)
 
 function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind
@@ -285,6 +302,9 @@ function fmt(dt: string | null): string {
         </button>
         <button class="ghost" :disabled="reindexing" @click="reindex">
           {{ reindexing ? '重建中…' : '重建向量索引' }}
+        </button>
+        <button class="ghost" @click="toggleTimeline">
+          {{ timelineMode ? '退出时间线' : '内心活动时间线' }}
         </button>
         <button @click="showForm = !showForm">{{ showForm ? '取消' : '新建记忆' }}</button>
       </div>
@@ -450,9 +470,27 @@ function fmt(dt: string | null): string {
 
     <div v-if="error" class="error">{{ error }}</div>
     <div v-if="loading" class="muted">加载中…</div>
+
+    <div v-if="timelineMode" class="panel timeline">
+      <div class="row spread">
+        <strong>内心活动时间线（L4 · 独白）</strong>
+        <span class="muted">{{ timelineItems.length }} 条 · 时间正序</span>
+      </div>
+      <div v-if="!timelineItems.length" class="muted">
+        暂无内心活动；在「心跳」面板开启独白后会自动产生
+      </div>
+      <div v-for="m in timelineItems" :key="m.id" class="timeline-item">
+        <div class="time muted">
+          {{ fmt(m.created_at) }} · 重要度 {{ m.importance }} · #{{ m.id }}
+          <template v-if="m.decay_at"> · 已归档</template>
+        </div>
+        <p class="content" :class="{ archived: !!m.decay_at }">{{ m.content }}</p>
+      </div>
+    </div>
+
     <div v-else-if="!filtered.length" class="muted">暂无记忆</div>
 
-    <div class="list">
+    <div v-if="!timelineMode" class="list">
       <div v-for="m in filtered" :key="m.id" class="panel item">
         <div class="row spread">
           <div class="row">
@@ -635,6 +673,21 @@ label {
 .content.archived {
   opacity: 0.5;
   text-decoration: line-through;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 720px;
+}
+
+.timeline-item {
+  border-left: 2px solid rgba(139, 92, 246, 0.5);
+  padding: 2px 0 2px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .notice {

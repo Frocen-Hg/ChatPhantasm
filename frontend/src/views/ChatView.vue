@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useCharactersStore } from '../stores/characters'
 import { useProvidersStore } from '../stores/providers'
 import { streamChat } from '../api/chat'
 import { testProvider } from '../api/providers'
+import { getHeartbeatConfig } from '../api/heartbeat'
+import { openHeartbeatSocket, type HeartbeatSocket, type WsStatus } from '../api/ws'
+import type { HeartbeatEvent } from '../types/heartbeat'
 import {
   deleteConversation,
   getMessages,
@@ -16,6 +19,7 @@ interface Msg {
   role: 'user' | 'assistant'
   content: string
   loading?: boolean
+  heartbeat?: 'proactive' | 'monologue'
 }
 
 const characters = useCharactersStore()
@@ -32,6 +36,11 @@ const sending = ref(false)
 const error = ref('')
 const msgsEl = ref<HTMLElement | null>(null)
 
+// ---- 心跳 WS：实时插入主动消息/独白气泡 ----
+const showMonologue = ref(false)
+const wsStatus = ref<WsStatus>('closed')
+let wsClient: HeartbeatSocket | null = null
+
 const currentCharacter = computed(() => characters.list.find((c) => c.id === currentId.value))
 const modelOptions = computed(() => {
   const p = providers.list.find((x) => x.id === providerId.value)
@@ -45,6 +54,48 @@ onMounted(async () => {
     currentId.value = characters.list[0].id
   }
 })
+
+onBeforeUnmount(() => {
+  wsClient?.close()
+  wsClient = null
+})
+
+async function connectHeartbeatSocket(id: number): Promise<void> {
+  wsClient?.close()
+  wsClient = null
+  try {
+    const cfg = await getHeartbeatConfig(id)
+    showMonologue.value = cfg.show_monologue
+  } catch {
+    showMonologue.value = false
+  }
+  wsClient = openHeartbeatSocket(
+    { characterId: id },
+    {
+      onEvent: handleHeartbeatEvent,
+      onStatus: (status) => {
+        wsStatus.value = status
+      }
+    }
+  )
+}
+
+function handleHeartbeatEvent(event: HeartbeatEvent): void {
+  const data = event.data
+  if (data.character_id !== currentId.value) return
+  if (data.monologue) {
+    if (!showMonologue.value) return
+    messages.value.push({ role: 'assistant', content: data.monologue, heartbeat: 'monologue' })
+    return
+  }
+  if (data.message) {
+    if (activeConvId.value === data.conversation_id) {
+      messages.value.push({ role: 'assistant', content: data.message, heartbeat: 'proactive' })
+    }
+    // 目标会话不在当前视图时仅刷新会话列表（打开会话即可见历史）
+    void loadConversations()
+  }
+}
 
 async function refreshLiveModels(): Promise<void> {
   const p = providers.list.find((x) => x.id === providerId.value)
@@ -90,6 +141,7 @@ watch(currentId, async (id) => {
   messages.value = []
   error.value = ''
   syncProvider()
+  void connectHeartbeatSocket(id)
   await loadConversations()
 })
 
@@ -222,6 +274,17 @@ watch(
             <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
           </select>
           <span class="muted">{{ activeConvId ? `会话 #${activeConvId}` : '新对话' }}</span>
+          <span
+            class="ws-dot"
+            :class="wsStatus"
+            :title="
+              wsStatus === 'open'
+                ? '心跳实时连接正常'
+                : wsStatus === 'connecting'
+                  ? '心跳连接中…'
+                  : '心跳连接断开，自动重连中…'
+            "
+          ></span>
         </div>
         <span v-if="currentCharacter" class="muted">{{ currentCharacter.card.description }}</span>
       </header>
@@ -370,5 +433,25 @@ watch(
   color: #f87171;
   font-size: 13px;
   padding: 4px;
+}
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #6b7280;
+}
+
+.ws-dot.open {
+  background: #4ade80;
+}
+
+.ws-dot.connecting {
+  background: #f59e0b;
+}
+
+.ws-dot.closed {
+  background: #f87171;
 }
 </style>
