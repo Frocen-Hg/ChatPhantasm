@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
         await heartbeat_service.stop_worker(heartbeat_worker)
 
 
-app = FastAPI(title="ChatPhantasm", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="ChatPhantasm", version="0.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
