@@ -7,6 +7,7 @@
 使用独立临时 SQLite，不调用真实 LLM（用 FakeProvider 注入 resolver）。
 """
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -212,6 +213,47 @@ async def test_due_gating(db) -> None:
     # 清理，避免影响后续 worker 用例
     job.enabled = False
     job.next_run_at = now + timedelta(hours=1)
+    await db.commit()
+
+
+async def test_job_status_fields(db) -> None:
+    """面板状态字段：blocked_reason / due / 试跑分解（P3c 修复：不再让未启用显示得像在调度）"""
+    now = datetime.now()
+    char = await new_character(db, "状态字段")
+    job = await heartbeat_service.get_or_create_job(db, char)
+    info = await heartbeat_service.job_dict(db, job)
+    check("未启用标记 blocked_reason=disabled", info["blocked_reason"] == "disabled")
+
+    job.enabled = True
+    job.quiet_hours_json = json.dumps({"start": "00:00", "end": "23:59"})
+    await db.commit()
+    info = await heartbeat_service.job_dict(db, job)
+    check("静默时段标记 quiet_hours", info["blocked_reason"] == "quiet_hours", f"{info['blocked_reason']}")
+
+    job.quiet_hours_json = "{}"
+    job.daily_limit = 1
+    await db.commit()
+    db.add(HeartbeatRun(character_id=char.id, type="monologue", status="done", started_at=now))
+    await db.commit()
+    info = await heartbeat_service.job_dict(db, job)
+    check("达到上限标记 daily_limit", info["blocked_reason"] == "daily_limit", f"{info['blocked_reason']}")
+    check(
+        "今日统计含试跑分解",
+        info["today_count"] == 1 and info["today_manual"] == 0,
+        f"count={info['today_count']} manual={info['today_manual']}",
+    )
+
+    job.daily_limit = 12
+    job.next_run_at = now - timedelta(minutes=1)
+    await db.commit()
+    info = await heartbeat_service.job_dict(db, job)
+    check(
+        "可运行时不标记拦截且 due=True",
+        info["blocked_reason"] is None and info["due"] is True,
+        f"reason={info['blocked_reason']} due={info['due']}",
+    )
+
+    job.enabled = False  # 清理，避免影响后续 worker 用例
     await db.commit()
 
 
@@ -677,6 +719,46 @@ async def test_proactive_creates_conversation(db) -> None:
     )
 
 
+async def test_worker_loop_auto_fires(db) -> None:
+    """worker 常驻循环：到期任务无需人工操作自动执行并推进 next_run_at"""
+    char = await new_character(db, "自动调度")
+    job = await heartbeat_service.get_or_create_job(db, char)
+    job.enabled = True
+    job.interval_min = 60
+    job.jitter_ratio = 0.0
+    job.quiet_hours_json = "{}"
+    job.types_json = '["monologue"]'
+    job.next_run_at = datetime.now() - timedelta(minutes=1)
+    await db.commit()
+
+    use_provider(FakeProvider())
+    old_interval = settings.heartbeat_worker_interval
+    settings.heartbeat_worker_interval = 0.05
+    task = asyncio.create_task(heartbeat_service.worker_loop())
+    try:
+        await asyncio.sleep(0.6)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        settings.heartbeat_worker_interval = old_interval
+    await db.refresh(job)
+
+    runs = await heartbeat_service.list_runs(db, char.id)
+    check(
+        "worker 循环自动执行到期心跳",
+        len(runs) == 1 and runs[0].status == "done" and runs[0].is_manual is False,
+        f"runs={[(r.status, r.is_manual) for r in runs]}",
+    )
+    check(
+        "自动执行后推进 next_run_at 与 last_run_at",
+        job.next_run_at > datetime.now() and job.last_run_at is not None,
+        f"next={job.next_run_at} last={job.last_run_at}",
+    )
+    job.enabled = False  # 清理
+    await db.commit()
+
+
 async def test_heartbeat_route(db) -> None:
     """心跳功能位路由（P3c）：绑定 model_routes['heartbeat'] 优先，未绑定/禁用回落聊天"""
     heartbeat_service.set_resolver(None)
@@ -832,6 +914,7 @@ def test_ws_endpoint_e2e() -> None:
                     and event["data"]["monologue"] == "WS 独白",
                     str(event),
                 )
+                check("手动试跑标记 is_manual", body.get("is_manual") is True, str(body.get("is_manual")))
                 r = client.post(f"/api/v1/heartbeat/characters/{cid}/run", json={"type": "proactive"})
                 body = r.json()
                 event = ws.receive_json()
@@ -865,6 +948,7 @@ async def run() -> None:
     async with SessionLocal() as db:
         await test_defaults_and_ext_override(db)
         await test_due_gating(db)
+        await test_job_status_fields(db)
         await test_next_run_jitter(db)
         await test_introspect_context(db)
         await test_monologue_run(db)
@@ -876,6 +960,7 @@ async def run() -> None:
         await test_reset_running(db)
         await test_manual_run_unsupported(db)
         await test_heartbeat_route(db)
+        await test_worker_loop_auto_fires(db)
         await test_ws_manager()
 
     await engine.dispose()

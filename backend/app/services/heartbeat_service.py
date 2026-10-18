@@ -245,8 +245,40 @@ async def update_job(db, character: Character, job: HeartbeatJob, payload) -> He
     return job
 
 
+def blocked_reason(job: HeartbeatJob, now: datetime, today_count: int) -> str | None:
+    """未运行时被拦下的原因（面板展示用；None 表示可运行）"""
+    if not job.enabled:
+        return "disabled"
+    if in_quiet_hours(now, job):
+        return "quiet_hours"
+    if today_count >= int(job.daily_limit or 0):
+        return "daily_limit"
+    if not any(item in SUPPORTED_TYPES for item in job.types):
+        return "no_type"
+    return None
+
+
+async def daily_run_stats(db, character_id: int, now: datetime | None = None) -> tuple[int, int]:
+    """今日执行统计：(总数, 试跑数)；总数用于每日上限门控"""
+    now = now or datetime.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    result = await db.execute(
+        select(HeartbeatRun.is_manual, func.count(HeartbeatRun.id))
+        .where(HeartbeatRun.character_id == character_id, HeartbeatRun.started_at >= day_start)
+        .group_by(HeartbeatRun.is_manual)
+    )
+    total = 0
+    manual = 0
+    for is_manual, count in result.all():
+        total += count
+        if is_manual:
+            manual += count
+    return total, manual
+
+
 async def job_dict(db, job: HeartbeatJob) -> dict:
     now = datetime.now()
+    total, manual = await daily_run_stats(db, job.character_id, now)
     return {
         "character_id": job.character_id,
         "enabled": job.enabled,
@@ -258,7 +290,10 @@ async def job_dict(db, job: HeartbeatJob) -> dict:
         "show_monologue": job.show_monologue,
         "last_run_at": job.last_run_at,
         "next_run_at": job.next_run_at,
-        "today_count": await daily_run_count(db, job.character_id, now),
+        "due": job.next_run_at <= now,  # 调度时间已到（未启用/被拦时不会自动推进）
+        "blocked_reason": blocked_reason(job, now, total),
+        "today_count": total,
+        "today_manual": manual,
         "quiet_now": in_quiet_hours(now, job),
         "updated_at": job.updated_at,
     }
@@ -440,11 +475,13 @@ async def _run_proactive(db, character: Character, conversation: Conversation | 
     await db.commit()
 
 
-async def run_heartbeat(db, job: HeartbeatJob, run_type: str = "monologue") -> HeartbeatRun:
+async def run_heartbeat(
+    db, job: HeartbeatJob, run_type: str = "monologue", *, manual: bool = False
+) -> HeartbeatRun:
     """执行一次心跳：生成 → 落库（记忆/状态）→ 记录 HeartbeatRun。
 
     生成失败不抛出，写入 status=failed 的运行记录，由调度层决定退避。
-    手动试跑（API /run）直接调用本函数，不改动调度时间。
+    手动试跑（API /run，manual=True）直接调用本函数，不改动调度时间。
     """
     if run_type not in SUPPORTED_TYPES:
         raise ValueError(f"不支持的心跳类型：{run_type}")
@@ -453,6 +490,7 @@ async def run_heartbeat(db, job: HeartbeatJob, run_type: str = "monologue") -> H
         character_id=job.character_id,
         type=run_type,
         status="running",
+        is_manual=manual,
         started_at=datetime.now(),
     )
     db.add(run)
@@ -527,6 +565,7 @@ def run_dict(run: HeartbeatRun) -> dict:
         "conversation_id": run.conversation_id,
         "type": run.type,
         "status": run.status,
+        "is_manual": run.is_manual,
         "output": run.output,
         "memory_id": run.memory_id,
         "message_id": run.message_id,

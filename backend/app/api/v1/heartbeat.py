@@ -50,7 +50,7 @@ async def run_once(
     job = await heartbeat_service.get_or_create_job(db, character)
     run_type = payload.type if payload is not None else "monologue"
     try:
-        run = await heartbeat_service.run_heartbeat(db, job, run_type)
+        run = await heartbeat_service.run_heartbeat(db, job, run_type, manual=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return heartbeat_service.run_dict(run)

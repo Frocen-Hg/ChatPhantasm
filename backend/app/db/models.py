@@ -273,6 +273,7 @@ class HeartbeatRun(Base):
     conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
     type: Mapped[str] = mapped_column(String(16))  # monologue | proactive
     status: Mapped[str] = mapped_column(String(16), default="running", index=True)  # running | done | failed
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False)  # True=面板试跑，False=调度自动触发
     output: Mapped[str] = mapped_column(Text, default="")  # 生成的文本（面板回看）
     memory_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 独白对应的 memories.id
     message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 主动消息对应的 messages.id

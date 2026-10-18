@@ -248,6 +248,11 @@ def main() -> None:
             r.status_code == 200 and r.json()["enabled"] is False,
             r.text,
         )
+        check(
+            "未启用时标记 blocked_reason=disabled",
+            r.status_code == 200 and r.json().get("blocked_reason") == "disabled",
+            r.text,
+        )
 
         r = client.put(
             f"/api/v1/heartbeat/characters/{new_id}",
@@ -297,11 +302,15 @@ def main() -> None:
             r.status_code == 200 and run_body.get("status") == "done",
             r.text,
         )
+        check("手动试跑标记 is_manual", run_body.get("is_manual") is True, r.text)
 
         r = client.get(f"/api/v1/heartbeat/characters/{new_id}/runs")
         check(
             "心跳运行记录 200",
-            r.status_code == 200 and len(r.json()) >= 1 and r.json()[0]["id"] == run_body.get("id"),
+            r.status_code == 200
+            and len(r.json()) >= 1
+            and r.json()[0]["id"] == run_body.get("id")
+            and r.json()[0].get("is_manual") is True,
             r.text,
         )
 

@@ -55,7 +55,7 @@ def main() -> None:
 
     with engine.connect() as conn:
         version = conn.execute(text("select version_num from alembic_version")).scalar_one()
-    check("迁移停留在 head", version == "0004", f"version={version}")
+    check("迁移停留在 head", version == "0005", f"version={version}")
 
     existing = {t for t in inspector.get_table_names() if t != "alembic_version"}
     expected = set(Base.metadata.tables.keys())

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useCharactersStore } from '../stores/characters'
 import * as api from '../api/heartbeat'
 import type { HeartbeatConfig, HeartbeatRun } from '../types/heartbeat'
@@ -33,6 +33,31 @@ const TYPE_OPTIONS = [
 ]
 const TYPE_LABELS: Record<string, string> = { monologue: '内心独白', proactive: '主动消息' }
 const STATUS_LABELS: Record<string, string> = { running: '进行中', done: '成功', failed: '失败' }
+const BLOCKED_LABELS: Record<string, string> = {
+  disabled: '未启用',
+  quiet_hours: '静默时段内，结束后自动运行',
+  daily_limit: '已达每日上限，明日恢复',
+  no_type: '未选择产出类型'
+}
+
+// 表单与已保存配置的差异（避免"改了复选框但没保存"的误解）
+const dirty = computed(() => {
+  const cfg = config.value
+  if (!cfg) return false
+  return (
+    form.enabled !== cfg.enabled ||
+    form.interval_min !== cfg.interval_min ||
+    form.daily_limit !== cfg.daily_limit ||
+    form.show_monologue !== cfg.show_monologue ||
+    form.quietStart !== (cfg.quiet_hours?.start ?? '') ||
+    form.quietEnd !== (cfg.quiet_hours?.end ?? '') ||
+    [...form.types].sort().join(',') !== [...cfg.types].sort().join(',')
+  )
+})
+
+// 自动刷新：每 15s 拉取配置与运行记录（有未保存修改时不动表单）
+const autoRefresh = ref(true)
+let pollTimer: number | null = null
 
 onMounted(async () => {
   await characters.fetchList()
@@ -40,6 +65,16 @@ onMounted(async () => {
     characterId.value = characters.list[0].id
     await load()
   }
+  pollTimer = window.setInterval(() => {
+    if (autoRefresh.value && characterId.value !== null && !saving.value && !running.value) {
+      void refresh(false)
+    }
+  }, 15000)
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) window.clearInterval(pollTimer)
+  pollTimer = null
 })
 
 function fillForm(cfg: HeartbeatConfig): void {
@@ -52,10 +87,9 @@ function fillForm(cfg: HeartbeatConfig): void {
   form.show_monologue = cfg.show_monologue
 }
 
-async function load(): Promise<void> {
+async function refresh(fill: boolean): Promise<void> {
   if (characterId.value === null) return
-  loading.value = true
-  error.value = ''
+  const keepForm = !fill && dirty.value
   try {
     const [cfg, list] = await Promise.all([
       api.getHeartbeatConfig(characterId.value),
@@ -63,12 +97,18 @@ async function load(): Promise<void> {
     ])
     config.value = cfg
     runs.value = list
-    fillForm(cfg)
+    if (!keepForm) fillForm(cfg)
   } catch (e: any) {
-    error.value = e?.message ?? String(e)
-  } finally {
-    loading.value = false
+    if (fill) error.value = e?.message ?? String(e)
   }
+}
+
+async function load(): Promise<void> {
+  if (characterId.value === null) return
+  loading.value = true
+  error.value = ''
+  await refresh(true)
+  loading.value = false
 }
 
 async function onCharacterChange(): Promise<void> {
@@ -152,6 +192,10 @@ function statusClass(status: string): string {
         <select v-model.number="characterId" @change="onCharacterChange">
           <option v-for="c in characters.list" :key="c.id" :value="c.id">{{ c.name }}</option>
         </select>
+        <label class="check">
+          <input v-model="autoRefresh" type="checkbox" />
+          自动刷新
+        </label>
         <button class="ghost" :disabled="loading" @click="load">
           {{ loading ? '加载中…' : '刷新' }}
         </button>
@@ -162,12 +206,29 @@ function statusClass(status: string): string {
     <div v-if="error" class="error">{{ error }}</div>
 
     <div v-if="config" class="panel config">
-      <div class="row spread">
+      <div class="row spread config-head">
         <strong>心跳配置</strong>
-        <span class="muted">
-          今日 {{ config.today_count }} 次 · 下次 {{ fmt(config.next_run_at) }}
-          <template v-if="config.quiet_now"> · 当前静默中</template>
-        </span>
+        <div class="row wrap status-row">
+          <template v-if="!config.enabled">
+            <span class="tag bad">未启用</span>
+            <span class="muted">不会自动运行（仅试跑）；勾选「启用心跳」并保存后开始调度</span>
+          </template>
+          <template v-else>
+            <span class="tag ok">已启用</span>
+            <span class="muted">
+              今日 {{ config.today_count }}/{{ config.daily_limit }} 次<template
+                v-if="config.today_manual"
+              >
+                （含试跑 {{ config.today_manual }}）</template
+              >
+            </span>
+            <span v-if="config.blocked_reason" class="tag busy">
+              {{ BLOCKED_LABELS[config.blocked_reason] ?? config.blocked_reason }}
+            </span>
+            <span v-else-if="config.due" class="tag ok">已到期，等待调度（≤30s 自动触发）</span>
+            <span v-else class="muted">下次 {{ fmt(config.next_run_at) }}</span>
+          </template>
+        </div>
       </div>
 
       <label class="check">
@@ -215,13 +276,15 @@ function statusClass(status: string): string {
 
       <div class="row">
         <button :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button>
+        <span v-if="dirty" class="dirty-hint">有未保存的修改，保存后生效</span>
+        <span v-else class="muted">配置已保存{{ config.enabled ? '，按间隔自动运行' : '' }}</span>
       </div>
     </div>
 
     <div class="panel tester">
       <div class="row spread">
         <strong>试跑</strong>
-        <span class="muted">手动触发一次，绕过开关/静默/上限，不改动排程</span>
+        <span class="muted">手动触发一次（绕过开关/静默/上限，不改动排程；计入今日次数）</span>
       </div>
       <div class="row wrap">
         <div class="field" style="width: 160px">
@@ -237,6 +300,7 @@ function statusClass(status: string): string {
       <div v-if="lastRun" class="last-run">
         <div class="row">
           <span class="tag">{{ TYPE_LABELS[lastRun.type] ?? lastRun.type }}</span>
+          <span v-if="lastRun.is_manual" class="tag tag-manual">试跑</span>
           <span class="tag" :class="statusClass(lastRun.status)">
             {{ STATUS_LABELS[lastRun.status] ?? lastRun.status }}
           </span>
@@ -257,6 +321,7 @@ function statusClass(status: string): string {
         <div class="row spread">
           <div class="row">
             <span class="tag">{{ TYPE_LABELS[r.type] ?? r.type }}</span>
+            <span v-if="r.is_manual" class="tag tag-manual">试跑</span>
             <span class="tag" :class="statusClass(r.status)">
               {{ STATUS_LABELS[r.status] ?? r.status }}
             </span>
@@ -352,6 +417,25 @@ label {
 .tag.busy {
   background: rgba(245, 158, 11, 0.15);
   color: #f59e0b;
+}
+
+.tag.tag-manual {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
+.config-head {
+  align-items: flex-start;
+}
+
+.status-row {
+  justify-content: flex-end;
+  flex: 1;
+}
+
+.dirty-hint {
+  color: #f59e0b;
+  font-size: 13px;
 }
 
 .record,
