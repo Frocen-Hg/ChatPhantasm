@@ -47,6 +47,15 @@ export function decayMemories(characterId: number): Promise<{ archived: number }
   return post<{ archived: number }>(`/memory/characters/${characterId}/decay`, {})
 }
 
+export function reindexMemories(
+  characterId: number
+): Promise<{ indexed: number; available: boolean }> {
+  return post<{ indexed: number; available: boolean }>(
+    `/memory/characters/${characterId}/reindex`,
+    {}
+  )
+}
+
 export function searchMemories(
   characterId: number,
   query: string,

@@ -18,6 +18,7 @@ const loading = ref(false)
 const error = ref('')
 const notice = ref('')
 const decaying = ref(false)
+const reindexing = ref(false)
 
 const searchQuery = ref('')
 const searchTopK = ref(6)
@@ -147,6 +148,8 @@ const filtered = computed(() => {
   return memories.value.filter((m) => m.content.toLowerCase().includes(kw))
 })
 
+const unindexedCount = computed(() => memories.value.filter((m) => m.indexed === false).length)
+
 function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind
 }
@@ -229,6 +232,23 @@ async function loadPreview(): Promise<void> {
   }
 }
 
+async function reindex(): Promise<void> {
+  if (!characterId.value) return
+  reindexing.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const res = await api.reindexMemories(characterId.value)
+    notice.value = res.available
+      ? `已重建向量索引：${res.indexed} 条`
+      : '向量库不可用（未启动 Chroma 或未配置嵌入），已跳过'
+  } catch (e: any) {
+    error.value = e?.message ?? String(e)
+  } finally {
+    reindexing.value = false
+  }
+}
+
 async function decay(): Promise<void> {
   if (!characterId.value) return
   decaying.value = true
@@ -262,6 +282,9 @@ function fmt(dt: string | null): string {
         <button class="ghost" @click="load">刷新</button>
         <button class="ghost" :disabled="decaying" @click="decay">
           {{ decaying ? '清理中…' : '清理衰减' }}
+        </button>
+        <button class="ghost" :disabled="reindexing" @click="reindex">
+          {{ reindexing ? '重建中…' : '重建向量索引' }}
         </button>
         <button @click="showForm = !showForm">{{ showForm ? '取消' : '新建记忆' }}</button>
       </div>
@@ -343,7 +366,8 @@ function fmt(dt: string | null): string {
               <span class="muted"> #{{ r.id }}</span>
             </span>
             <span class="muted">
-              score {{ r.score }} · 关键词 {{ r.keyword }} · 新近 {{ r.recency }} · {{ r.tokens }} tok
+              score {{ r.score }} · 关键词 {{ r.keyword }} · 向量 {{ r.vector ?? '—' }} · 新近
+              {{ r.recency }} · {{ r.tokens }} tok
             </span>
           </div>
           <p class="content">{{ r.content }}</p>
@@ -419,6 +443,9 @@ function fmt(dt: string | null): string {
           <input v-model="keyword" placeholder="搜索记忆内容" />
         </div>
       </div>
+      <div v-if="unindexedCount" class="muted">
+        未索引 {{ unindexedCount }} 条：可点「重建向量索引」，或等后台自动补齐（约 1 分钟一次）
+      </div>
     </div>
 
     <div v-if="error" class="error">{{ error }}</div>
@@ -432,6 +459,7 @@ function fmt(dt: string | null): string {
             <span class="tag">{{ m.layer }}</span>
             <span class="tag tag-kind">{{ kindLabel(m.kind) }}</span>
             <span v-if="m.visibility === 'private'" class="tag tag-private">private</span>
+            <span v-if="m.indexed === false" class="tag tag-warn">未索引</span>
             <span v-if="m.decay_at" class="tag tag-archived">已归档</span>
           </div>
           <span class="muted">
@@ -597,6 +625,11 @@ label {
 .tag-archived {
   background: rgba(156, 163, 175, 0.2);
   color: #9ca3af;
+}
+
+.tag-warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
 }
 
 .content.archived {

@@ -131,7 +131,7 @@ async function save(): Promise<void> {
             </select>
           </label>
           <label>模型名
-            <input v-model="modelName" placeholder="deepseek-chat" />
+            <input v-model="modelName" placeholder="deepseek-v4-pro" />
           </label>
           <label>temperature
             <input v-model.number="temperature" type="number" step="0.1" min="0" max="2" />

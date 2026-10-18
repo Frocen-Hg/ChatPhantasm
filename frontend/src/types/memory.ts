@@ -8,6 +8,7 @@ export interface Memory {
   importance: number
   visibility: string // public | private
   access_count: number
+  indexed?: boolean | null // true=已索引；false=应索引但缺失；null=不适用（L2/private/已归档）
   source_start_id?: number | null
   source_end_id?: number | null
   decay_at?: string | null
@@ -56,6 +57,7 @@ export interface MemorySearchResult {
   content: string
   importance: number
   keyword: number
+  vector: number | null
   recency: number
   score: number
   effective_importance: number

@@ -19,6 +19,7 @@ async def seed_defaults() -> None:
         await _ensure_seed_character(db)
         await _repair_dangling_provider_refs(db)
         await _ensure_default_provider_flag(db)
+        await _repair_deprecated_models(db)
         await _ensure_routes(db)
         await _repair_dangling_routes(db)
         await db.commit()
@@ -113,6 +114,33 @@ async def _ensure_default_provider_flag(db) -> None:
         default = first
     if default.type == "openai_compat" and not default.api_key and settings.deepseek_api_key:
         default.api_key = settings.deepseek_api_key
+
+
+# 已下线的模型名（上游更名；对旧名 DeepSeek 不报错而是挂起，必须替换）
+DEPRECATED_MODELS = {"deepseek-chat", "deepseek-reasoner"}
+
+
+async def _repair_deprecated_models(db) -> None:
+    """把库中已下线的模型名替换为当前默认（providers / model_routes / 角色 ext.model）"""
+    provs = (await db.execute(select(ProviderConfig))).scalars().all()
+    for p in provs:
+        models = p.models
+        if any(m in DEPRECATED_MODELS for m in models):
+            p.models_json = json.dumps(
+                [settings.default_model if m in DEPRECATED_MODELS else m for m in models],
+                ensure_ascii=False,
+            )
+    routes = (await db.execute(select(ModelRoute))).scalars().all()
+    for route in routes:
+        if route.model in DEPRECATED_MODELS:
+            route.model = settings.default_model
+    chars = (await db.execute(select(Character))).scalars().all()
+    for char in chars:
+        ext = char.ext
+        model = ext.get("model") if isinstance(ext.get("model"), dict) else None
+        if model and model.get("model") in DEPRECATED_MODELS:
+            model["model"] = settings.default_model
+            char.ext_json = json.dumps(ext, ensure_ascii=False)
 
 
 async def _ensure_routes(db) -> None:

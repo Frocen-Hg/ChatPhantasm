@@ -18,6 +18,8 @@ dependencies = [
     "asyncpg",
     "alembic",
     "httpx",
+    "chromadb-client==1.5.9",
+    "python-multipart",
 ]
 
 [project.scripts]
