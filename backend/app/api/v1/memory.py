@@ -28,6 +28,7 @@ def _to_out(m: Memory) -> dict:
         "importance": m.importance,
         "visibility": m.visibility,
         "access_count": m.access_count,
+        "indexed": m.embedding_id is not None,  # 是否已写入向量索引
         "source_start_id": m.source_start_id,
         "source_end_id": m.source_end_id,
         "decay_at": m.decay_at,

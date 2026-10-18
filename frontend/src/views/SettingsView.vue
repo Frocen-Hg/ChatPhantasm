@@ -242,6 +242,7 @@ async function save(): Promise<void> {
   try {
     if (editingId.value !== null) {
       await api.updateProvider(editingId.value, payload)
+      await store.fetchList() // 立即刷新列表，默认/嵌入标记无需手动刷新页面
     } else {
       await store.create(payload)
     }

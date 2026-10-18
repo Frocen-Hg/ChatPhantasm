@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -365,8 +366,10 @@ async def ingest_turn(
     state = await get_or_create_state(db, character.id)
     state.last_user_at = datetime.now()
     await db.commit()
-    # 向量化（Chroma 不可达或未配置嵌入时静默降级为纯 SQL 检索）
-    await vector_service.index_memories(db, character.id, changed)
+    # 向量化（Chroma 不可达或未配置嵌入时降级为纯 SQL；失败由后台扫描补齐）
+    indexed = await vector_service.index_memories(db, character.id, changed)
+    if changed and indexed == 0:
+        logger.info("本轮 %s 条记忆未索引，等待后台补齐", len(changed))
 
     every = int(mem_cfg.get("summarize_every", settings.summarize_every))
     if every > 0:
@@ -590,8 +593,27 @@ async def run_worker_once(processor=None) -> bool:
         return True
 
 
+_last_index_sweep = 0.0
+
+
+async def _sweep_missing_indexes() -> None:
+    """worker 空转时低频补齐缺失向量索引（自愈瞬时嵌入失败，默认每 60s 一次）"""
+    global _last_index_sweep
+    now = time.monotonic()
+    if now - _last_index_sweep < settings.memory_index_sweep_interval:
+        return
+    _last_index_sweep = now
+    async with SessionLocal() as db:
+        try:
+            count = await index_missing_memories(db)
+            if count:
+                logger.info("后台补齐 %s 条记忆向量索引", count)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("索引补齐失败：%s", e)
+
+
 async def worker_loop() -> None:
-    """常驻循环：有任务连续处理，空转按间隔轮询"""
+    """常驻循环：有任务连续处理，空转时低频补齐缺失索引并轮询"""
     while True:
         try:
             processed = await run_worker_once()
@@ -601,6 +623,7 @@ async def worker_loop() -> None:
             logger.warning("记忆 worker 异常：%s", e)
             processed = False
         if not processed:
+            await _sweep_missing_indexes()
             await asyncio.sleep(settings.memory_worker_interval)
 
 
@@ -647,7 +670,9 @@ async def _sync_memory_vector(db: AsyncSession, memory: Memory) -> None:
         and memory.layer in ("L3", "L4")
     )
     if searchable:
-        await vector_service.index_memories(db, memory.character_id, [memory])
+        indexed = await vector_service.index_memories(db, memory.character_id, [memory])
+        if indexed == 0:
+            logger.info("记忆 #%s 未索引（向量层不可用或嵌入失败），等待后台补齐", memory.id)
     else:
         await vector_service.delete_memory_vectors(memory.character_id, [memory.id])
 
@@ -677,6 +702,38 @@ async def reindex_memories(db: AsyncSession, character_id: int) -> int:
     candidates = await _candidates(db, character_id)
     await vector_service.drop_character(character_id)
     return await vector_service.index_memories(db, character_id, candidates)
+
+
+async def index_missing_memories(
+    db: AsyncSession, character_id: int | None = None, limit: int = 200
+) -> int:
+    """补齐缺失索引的记忆（自愈）：public、未归档、L3/L4 且 embedding_id 为空。
+
+    覆盖"嵌入瞬时不可用导致永久漏索引"与历史数据；按角色分组写入各自 collection。
+    """
+    if not await vector_service.store_available():
+        return 0
+    stmt = (
+        select(Memory)
+        .where(
+            Memory.visibility == "public",
+            Memory.decay_at.is_(None),
+            Memory.layer.in_(("L3", "L4")),
+            Memory.embedding_id.is_(None),
+        )
+        .order_by(Memory.id.desc())
+        .limit(limit)
+    )
+    if character_id is not None:
+        stmt = stmt.where(Memory.character_id == character_id)
+    result = await db.execute(stmt)
+    grouped: dict[int, list[Memory]] = {}
+    for memory in result.scalars().all():
+        grouped.setdefault(memory.character_id, []).append(memory)
+    total = 0
+    for cid, group in grouped.items():
+        total += await vector_service.index_memories(db, cid, group)
+    return total
 
 
 async def delete_memory(db: AsyncSession, memory: Memory) -> None:

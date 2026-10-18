@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     memory_jobs_enabled: bool = True
     memory_worker_interval: float = 2.0  # worker 空转轮询间隔（秒）
     memory_job_max_attempts: int = 3  # 失败重试上限，超过置 failed
+    memory_index_sweep_interval: float = 60.0  # 后台补齐缺失向量索引的扫描间隔（秒）
 
 
 settings = Settings()

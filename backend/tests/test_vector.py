@@ -225,6 +225,29 @@ async def test_sync_and_reindex(db) -> None:
     )
 
 
+async def test_missing_index_sweep(db) -> None:
+    char = await _new_character(db, "索引自愈")
+    # 直接入库，模拟"嵌入瞬时不可用导致漏索引"
+    memory = Memory(
+        character_id=char.id, layer="L3", kind="fact", content="喜欢潜水", importance=8.0
+    )
+    db.add(memory)
+    await db.commit()
+
+    store = vector_service.get_store()
+    col = vector_service.memory_collection(char.id)
+    check("初始处于未索引状态", memory.embedding_id is None and await store.count(col) == 0)
+
+    indexed = await memory_service.index_missing_memories(db, char.id)
+    await db.refresh(memory)
+    check(
+        "后台补齐缺失索引",
+        indexed == 1 and memory.embedding_id is not None,
+        f"indexed={indexed} embedding_id={memory.embedding_id}",
+    )
+    check("向量已写入集合", await store.count(col) == 1, await store.count(col))
+
+
 async def run() -> None:
     await init_db()
     await seed_defaults()
@@ -238,6 +261,7 @@ async def run() -> None:
             await test_graceful_degradation(db)
             await test_delete_and_drop(db)
             await test_sync_and_reindex(db)
+            await test_missing_index_sweep(db)
     finally:
         vector_service.reset()
 

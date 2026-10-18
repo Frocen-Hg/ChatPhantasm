@@ -148,6 +148,8 @@ const filtered = computed(() => {
   return memories.value.filter((m) => m.content.toLowerCase().includes(kw))
 })
 
+const unindexedCount = computed(() => memories.value.filter((m) => m.indexed === false).length)
+
 function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind
 }
@@ -441,6 +443,9 @@ function fmt(dt: string | null): string {
           <input v-model="keyword" placeholder="搜索记忆内容" />
         </div>
       </div>
+      <div v-if="unindexedCount" class="muted">
+        未索引 {{ unindexedCount }} 条：可点「重建向量索引」，或等后台自动补齐（约 1 分钟一次）
+      </div>
     </div>
 
     <div v-if="error" class="error">{{ error }}</div>
@@ -454,6 +459,7 @@ function fmt(dt: string | null): string {
             <span class="tag">{{ m.layer }}</span>
             <span class="tag tag-kind">{{ kindLabel(m.kind) }}</span>
             <span v-if="m.visibility === 'private'" class="tag tag-private">private</span>
+            <span v-if="m.indexed === false" class="tag tag-warn">未索引</span>
             <span v-if="m.decay_at" class="tag tag-archived">已归档</span>
           </div>
           <span class="muted">
@@ -619,6 +625,11 @@ label {
 .tag-archived {
   background: rgba(156, 163, 175, 0.2);
   color: #9ca3af;
+}
+
+.tag-warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
 }
 
 .content.archived {

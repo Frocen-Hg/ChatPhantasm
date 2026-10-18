@@ -8,6 +8,7 @@ export interface Memory {
   importance: number
   visibility: string // public | private
   access_count: number
+  indexed?: boolean // 是否已写入向量索引（后端补齐前为 false）
   source_start_id?: number | null
   source_end_id?: number | null
   decay_at?: string | null
