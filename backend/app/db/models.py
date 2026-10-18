@@ -225,6 +225,63 @@ class KbJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class HeartbeatJob(Base):
+    """心跳调度配置（每角色一行，P3a）：worker 扫描到期行执行独白/主动消息。
+
+    语义：next_run_at 为下次计划时间，每次运行后按 interval × 抖动推进；
+    静默时段与每日上限在扫描时过滤（不推进 next_run_at，解禁后自然触发）。
+    """
+
+    __tablename__ = "heartbeat_jobs"
+
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    interval_min: Mapped[int] = mapped_column(Integer, default=60)
+    types_json: Mapped[str] = mapped_column(Text, default='["monologue"]')  # ["monologue","proactive"]
+    quiet_hours_json: Mapped[str] = mapped_column(Text, default='{"start":"23:00","end":"08:00"}')
+    daily_limit: Mapped[int] = mapped_column(Integer, default=12)  # 0 表示不运行
+    jitter_ratio: Mapped[float] = mapped_column(Float, default=0.2)  # 抖动比例，避免整点齐发
+    show_monologue: Mapped[bool] = mapped_column(Boolean, default=False)  # 前端是否展示独白（不影响注入）
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def types(self) -> list[str]:
+        try:
+            return [str(t) for t in json.loads(self.types_json or "[]")]
+        except json.JSONDecodeError:
+            return []
+
+    @property
+    def quiet_hours(self) -> dict:
+        try:
+            data = json.loads(self.quiet_hours_json or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+class HeartbeatRun(Base):
+    """心跳执行记录（P3a）：每次独白/主动消息一行，供面板回看与失败排查"""
+
+    __tablename__ = "heartbeat_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    type: Mapped[str] = mapped_column(String(16))  # monologue | proactive
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)  # running | done | failed
+    output: Mapped[str] = mapped_column(Text, default="")  # 生成的文本（面板回看）
+    memory_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 独白对应的 memories.id
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 主动消息对应的 messages.id
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class CharacterState(Base):
     """角色内心状态（单行），供独白/心跳读写；P1 仅建表，P3 填充"""
 
