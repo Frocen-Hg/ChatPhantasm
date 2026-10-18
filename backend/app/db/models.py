@@ -237,7 +237,7 @@ class HeartbeatJob(Base):
     character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     interval_min: Mapped[int] = mapped_column(Integer, default=60)
-    types_json: Mapped[str] = mapped_column(Text, default='["monologue"]')  # ["monologue","proactive"]
+    types_json: Mapped[str] = mapped_column(Text, default='["monologue","proactive"]')
     quiet_hours_json: Mapped[str] = mapped_column(Text, default='{"start":"23:00","end":"08:00"}')
     daily_limit: Mapped[int] = mapped_column(Integer, default=12)  # 0 表示不运行
     jitter_ratio: Mapped[float] = mapped_column(Float, default=0.2)  # 抖动比例，避免整点齐发

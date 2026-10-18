@@ -26,16 +26,18 @@ try:
     from app.config import settings  # noqa: E402
     from app.db.models import (  # noqa: E402
         Character,
+        CharacterState,
         Conversation,
         HeartbeatRun,
         KbLore,
         Memory,
+        MemoryJob,
         Message,
     )
     from app.db.session import SessionLocal, engine, init_db  # noqa: E402
     from app.schemas.heartbeat import HeartbeatConfigUpdate  # noqa: E402
     from app.seed import seed_defaults  # noqa: E402
-    from app.services import heartbeat_service, memory_service  # noqa: E402
+    from app.services import heartbeat_service, memory_service, ws_service  # noqa: E402
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -107,7 +109,7 @@ async def test_defaults_and_ext_override(db) -> None:
     check(
         "默认间隔/类型/静默取全局",
         job.interval_min == settings.heartbeat_interval_min
-        and job.types == ["monologue"]
+        and job.types == ["monologue", "proactive"]
         and job.quiet_hours.get("start") == settings.heartbeat_quiet_start,
         f"interval={job.interval_min} types={job.types} quiet={job.quiet_hours}",
     )
@@ -414,6 +416,7 @@ async def test_worker_backoff(db) -> None:
     job.interval_min = 60
     job.jitter_ratio = 0.0
     job.quiet_hours_json = "{}"
+    job.types_json = '["monologue"]'  # 固定为独白，保证 worker 路径确定性
     job.next_run_at = datetime.now() - timedelta(minutes=1)
     await db.commit()
 
@@ -492,6 +495,328 @@ async def test_manual_run_unsupported(db) -> None:
         check("非支持类型直接拒绝", True)
 
 
+async def test_proactive_conditions(db) -> None:
+    char = await new_character(
+        db,
+        "主动条件",
+        ext={"heartbeat": {"proactive_min_idle_min": 60, "proactive_probability": 1.0}},
+    )
+    conv = await new_conversation(db, char.id, "主动条件会话")
+    job = await heartbeat_service.get_or_create_job(db, char)
+    job.types_json = '["monologue","proactive"]'
+    state = await memory_service.get_or_create_state(db, char.id)
+    state.last_user_at = datetime.now() - timedelta(hours=2)
+    await db.commit()
+
+    check(
+        "空闲超阈值且概率命中 → proactive",
+        await heartbeat_service.choose_type(db, job) == "proactive",
+    )
+
+    state.last_user_at = datetime.now() - timedelta(minutes=5)
+    await db.commit()
+    check(
+        "用户刚说过话 → 回落 monologue",
+        await heartbeat_service.choose_type(db, job) == "monologue",
+    )
+
+    char.ext_json = json.dumps(
+        {"heartbeat": {"proactive_min_idle_min": 60, "proactive_probability": 0.0}},
+        ensure_ascii=False,
+    )
+    state.last_user_at = datetime.now() - timedelta(hours=2)
+    await db.commit()
+    check(
+        "概率未命中 → 回落 monologue",
+        await heartbeat_service.choose_type(db, job) == "monologue",
+    )
+
+    job.types_json = '["proactive"]'
+    state.last_user_at = datetime.now() - timedelta(minutes=5)
+    await db.commit()
+    check(
+        "仅 proactive 且用户刚说话 → 跳过本轮",
+        await heartbeat_service.choose_type(db, job) is None,
+    )
+
+    # last_user_at 滞后时以最近用户消息为准
+    state.last_user_at = datetime.now() - timedelta(hours=5)
+    db.add(Message(conversation_id=conv.id, role="user", content="刚发的消息"))
+    char.ext_json = json.dumps({"heartbeat": {"proactive_probability": 1.0}}, ensure_ascii=False)
+    await db.commit()
+    check(
+        "以最近用户消息为准（纠正滞后状态）",
+        await heartbeat_service.choose_type(db, job) is None,
+    )
+
+    # ext 覆盖空闲阈值（把最近用户消息也改旧，排除消息时间的影响）
+    latest = (
+        await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id, Message.role == "user")
+            .order_by(Message.id.desc())
+        )
+    ).scalars().first()
+    latest.created_at = datetime.now() - timedelta(minutes=10)
+    char.ext_json = json.dumps(
+        {"heartbeat": {"proactive_min_idle_min": 1, "proactive_probability": 1.0}},
+        ensure_ascii=False,
+    )
+    state.last_user_at = datetime.now() - timedelta(minutes=10)
+    await db.commit()
+    check(
+        "ext.heartbeat 覆盖空闲阈值",
+        await heartbeat_service.choose_type(db, job) == "proactive",
+    )
+
+
+async def test_proactive_run(db) -> None:
+    char = await new_character(db, "主动执行")
+    conv = await new_conversation(db, char.id, "主动执行会话")
+    db.add(Message(conversation_id=conv.id, role="user", content="上次说的话"))
+    state = await memory_service.get_or_create_state(db, char.id)
+    state.last_user_at = datetime.now() - timedelta(hours=6)
+    await db.commit()
+    job = await heartbeat_service.get_or_create_job(db, char)
+    use_provider(
+        FakeProvider(
+            json.dumps(
+                {
+                    "message": "好久没聊啦，终端还很安静。",
+                    "mood": "期待",
+                    "current_focus": "等用户回应",
+                    "arousal": 0.5,
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+    run = await heartbeat_service.run_heartbeat(db, job, "proactive")
+    check(
+        "主动消息执行成功",
+        run.status == "done" and run.error == "" and run.message_id is not None,
+        f"status={run.status} err={run.error}",
+    )
+    message = await db.get(Message, run.message_id or 0)
+    check(
+        "落库为 assistant 消息",
+        message is not None
+        and message.role == "assistant"
+        and message.content == "好久没聊啦，终端还很安静。"
+        and message.conversation_id == conv.id,
+        f"message={message}",
+    )
+    meta = json.loads(message.meta_json) if message is not None else {}
+    check(
+        "meta 标注 source=heartbeat 与 run_id",
+        meta.get("source") == "heartbeat" and meta.get("run_id") == run.id,
+        str(meta),
+    )
+    job_row = (
+        await db.execute(select(MemoryJob).where(MemoryJob.source_end_id == message.id))
+    ).scalar_one_or_none()
+    check(
+        "同事务生成 memory_jobs（无用户侧 source_start_id=0）",
+        job_row is not None
+        and job_row.source_start_id == 0
+        and job_row.status == "pending"
+        and job_row.conversation_id == conv.id,
+        f"job={job_row}",
+    )
+    state = await memory_service.get_or_create_state(db, char.id)
+    check(
+        "主动消息更新内心状态",
+        state.mood == "期待" and state.last_beat_at is not None,
+        f"mood={state.mood}",
+    )
+
+    # 主动消息进入记忆流水线（真实 _process_job + FakeProvider 抽取）
+    from app.services import chat_service  # noqa: E402
+
+    original = chat_service.resolve_provider
+
+    async def fake_resolve(db2, character, **kwargs):
+        return FakeProvider(), {"model": "fake"}
+
+    chat_service.resolve_provider = fake_resolve
+    try:
+        processed = await memory_service.run_worker_once()
+    finally:
+        chat_service.resolve_provider = original
+    check("记忆任务被 worker 消费", processed is True)
+    async with SessionLocal() as fresh:
+        row = await fresh.get(MemoryJob, job_row.id)
+        check("主动消息记忆任务完成", row is not None and row.status == "done", f"status={row.status if row else None}")
+        st = await fresh.get(CharacterState, char.id)
+        check(
+            "主动消息不更新 last_user_at",
+            st.last_user_at is not None
+            and (datetime.now() - st.last_user_at) > timedelta(hours=5),
+            f"last_user_at={st.last_user_at}",
+        )
+
+
+async def test_proactive_creates_conversation(db) -> None:
+    char = await new_character(db, "主动新建会话")
+    job = await heartbeat_service.get_or_create_job(db, char)
+    use_provider(FakeProvider(json.dumps({"message": "第一次开口，你好呀。"}, ensure_ascii=False)))
+    run = await heartbeat_service.run_heartbeat(db, job, "proactive")
+    check(
+        "无会话时新建并落消息",
+        run.status == "done" and run.conversation_id is not None and run.message_id is not None,
+        f"status={run.status} conv={run.conversation_id}",
+    )
+    conversation = await db.get(Conversation, run.conversation_id or 0)
+    check(
+        "会话归属正确",
+        conversation is not None and conversation.character_id == char.id,
+        f"conv={conversation}",
+    )
+
+
+class FakeSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.accepted = False
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+
+class BrokenSocket:
+    async def accept(self) -> None:
+        pass
+
+    async def send_text(self, text: str) -> None:
+        raise RuntimeError("connection closed")
+
+
+async def test_ws_manager() -> None:
+    manager = ws_service.ConnectionManager()
+    sock_a, sock_b, sock_all = FakeSocket(), FakeSocket(), FakeSocket()
+    conn_a = await manager.connect(sock_a, character_id=1)
+    await manager.connect(sock_b, character_id=2, conversation_id=9)
+    await manager.connect(sock_all)
+
+    sent = await manager.broadcast_heartbeat(
+        character_id=1, conversation_id=5, run_id=7, run_type="proactive", message="你好"
+    )
+    check(
+        "按角色筛选广播（无筛选连接全收）",
+        sent == 2 and len(sock_a.sent) == 1 and len(sock_all.sent) == 1 and sock_b.sent == [],
+        f"sent={sent}",
+    )
+    event = json.loads(sock_a.sent[0])
+    check(
+        "事件结构与负载",
+        event["type"] == "heartbeat"
+        and event["data"]["run_id"] == 7
+        and event["data"]["type"] == "proactive"
+        and event["data"]["character_id"] == 1
+        and event["data"]["conversation_id"] == 5
+        and event["data"]["message"] == "你好"
+        and "monologue" not in event["data"],
+        str(event),
+    )
+
+    await manager.disconnect(conn_a)
+    await manager.broadcast_heartbeat(
+        character_id=1, conversation_id=None, run_id=8, run_type="monologue", monologue="独白"
+    )
+    check(
+        "断开后不再接收",
+        len(sock_a.sent) == 1 and len(sock_all.sent) == 2,
+        f"a={len(sock_a.sent)} all={len(sock_all.sent)}",
+    )
+
+    sent = await manager.broadcast_heartbeat(
+        character_id=2, conversation_id=5, run_id=9, run_type="monologue", monologue="x"
+    )
+    check(
+        "会话不匹配不投递",
+        sent == 1 and sock_b.sent == [],
+        f"sent={sent}",
+    )
+
+    broken = await manager.connect(BrokenSocket(), character_id=3)
+    sent = await manager.broadcast_heartbeat(
+        character_id=3, conversation_id=None, run_id=10, run_type="monologue", monologue="y"
+    )
+    check(
+        "坏连接逐出且不影响其他连接",
+        sent == 1 and broken not in manager._connections,
+        f"sent={sent}",
+    )
+
+
+def test_ws_endpoint_e2e() -> None:
+    """真实 WS 端点（TestClient）：ping/pong、订阅收到两类心跳事件、token 校验位"""
+    from fastapi.testclient import TestClient  # noqa: E402
+    from starlette.websockets import WebSocketDisconnect  # noqa: E402
+
+    from app.config import settings as app_settings  # noqa: E402
+    from app.main import app  # noqa: E402
+
+    class _FakeLLM:
+        async def chat(self, messages, *, model, temperature, max_tokens):
+            for ch in (
+                '{"monologue": "WS 独白", "message": "WS 主动", '
+                '"mood": "平静", "current_focus": "测试", "arousal": 0.1}'
+            ):
+                yield ch
+
+    async def resolver(db, character):
+        return _FakeLLM(), {"model": "fake"}
+
+    with TestClient(app) as client:
+        r = client.post("/api/v1/characters", json={"card": {"name": "WS 测试"}, "ext": {}})
+        cid = r.json()["id"] if r.status_code == 200 else None
+        heartbeat_service.set_resolver(resolver)
+        try:
+            with client.websocket_connect(f"/api/v1/ws?character_id={cid}") as ws:
+                ws.send_text("ping")
+                check("WS ping → pong", ws.receive_json() == {"type": "pong"})
+                r = client.post(f"/api/v1/heartbeat/characters/{cid}/run", json={"type": "monologue"})
+                body = r.json()
+                event = ws.receive_json()
+                check(
+                    "WS 收到独白事件",
+                    r.status_code == 200
+                    and event["type"] == "heartbeat"
+                    and event["data"]["run_id"] == body["id"]
+                    and event["data"]["monologue"] == "WS 独白",
+                    str(event),
+                )
+                r = client.post(f"/api/v1/heartbeat/characters/{cid}/run", json={"type": "proactive"})
+                body = r.json()
+                event = ws.receive_json()
+                check(
+                    "WS 收到主动消息事件",
+                    r.status_code == 200
+                    and body["status"] == "done"
+                    and event["data"]["message"] == "WS 主动"
+                    and event["data"]["type"] == "proactive",
+                    f"{r.text} / {event}",
+                )
+
+            app_settings.ws_token = "test-token"
+            try:
+                with client.websocket_connect(f"/api/v1/ws?character_id={cid}"):
+                    check("WS token 缺失被拒绝", False, "连接未被拒绝")
+            except WebSocketDisconnect:
+                check("WS token 缺失被拒绝", True)
+            finally:
+                app_settings.ws_token = ""
+            with client.websocket_connect(f"/api/v1/ws?character_id={cid}&token=test-token") as ws2:
+                ws2.send_text("ping")
+                check("WS token 正确可连接", ws2.receive_json() == {"type": "pong"})
+        finally:
+            heartbeat_service.set_resolver(None)
+
+
 async def run() -> None:
     await init_db()
     await seed_defaults()
@@ -502,17 +827,15 @@ async def run() -> None:
         await test_introspect_context(db)
         await test_monologue_run(db)
         await test_plain_text_fallback(db)
+        await test_proactive_conditions(db)
+        await test_proactive_run(db)
+        await test_proactive_creates_conversation(db)
         await test_worker_backoff(db)
         await test_reset_running(db)
         await test_manual_run_unsupported(db)
+        await test_ws_manager()
 
     await engine.dispose()
-    try:
-        _tmp.cleanup()
-    except Exception:
-        pass
-    print(f"\n结果：{PASSED} 通过 / {FAILED} 失败")
-    sys.exit(1 if FAILED else 0)
 
 
 def main() -> None:
@@ -521,6 +844,21 @@ def main() -> None:
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+    try:
+        test_ws_endpoint_e2e()
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
+    try:
+        asyncio.run(engine.dispose())
+    except Exception:
+        pass
+    try:
+        _tmp.cleanup()
+    except Exception:
+        pass
+    print(f"\n结果：{PASSED} 通过 / {FAILED} 失败")
+    sys.exit(1 if FAILED else 0)
 
 
 if __name__ == "__main__":

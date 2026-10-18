@@ -1,12 +1,14 @@
-"""心跳调度与内心独白（P3a）。
+"""心跳调度、内心独白与主动消息（P3a/P3b）。
 
 复用 outbox worker 模式（与 memory_jobs / kb_jobs 同构）：heartbeat_jobs 每角色一行
 配置（next_run_at 作重复调度），heartbeat_runs 记录每次执行。到期扫描时过滤
 禁用 / 静默时段 / 每日上限；失败按连续失败次数退避，超过上限回到正常节奏。
 
-P3a 仅实现 monologue：产出 memories(L4, kind=monologue, visibility=private) +
-character_state(mood/current_focus/arousal/last_beat_at)；独白为 private 不直接注入
-聊天上下文，通过内心状态影响后续对话。主动消息（proactive）与 WS 推送在 P3b。
+两种产出：
+- monologue（P3a）：memories(L4, kind=monologue, visibility=private) +
+  character_state；独白为 private 不直接注入聊天上下文，通过内心状态影响对话。
+- proactive（P3b）：满足空闲阈值 + 概率抖动时，落 messages(source=heartbeat)
+  并同事务入队记忆任务；run 成功后经 WS 广播事件（离线回放靠 messages 历史）。
 """
 
 import asyncio
@@ -19,16 +21,24 @@ from datetime import datetime, time, timedelta
 from sqlalchemy import func, select
 
 from ..config import settings
-from ..db.models import Character, CharacterState, Conversation, HeartbeatJob, HeartbeatRun, Memory
+from ..db.models import (
+    Character,
+    CharacterState,
+    Conversation,
+    HeartbeatJob,
+    HeartbeatRun,
+    Memory,
+    Message,
+)
 from ..db.session import SessionLocal
-from ..memory import monologue
+from ..memory import monologue, proactive
 from ..memory.tokens import estimate_tokens
-from . import memory_service
-from .chat_service import resolve_provider
+from . import memory_service, ws_service
+from .chat_service import get_or_create_conversation, resolve_provider
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_TYPES = ("monologue",)  # P3b 加入 proactive
+SUPPORTED_TYPES = ("monologue", "proactive")
 KNOWN_TYPES = ("monologue", "proactive")
 
 
@@ -59,6 +69,26 @@ def resolve_config(character: Character) -> dict:
             if ext.get(key) is not None:
                 cfg[key] = ext[key]
     return cfg
+
+
+def _heartbeat_ext(character: Character) -> dict:
+    ext = character.ext.get("heartbeat")
+    return ext if isinstance(ext, dict) else {}
+
+
+def proactive_min_idle_min(character: Character) -> int:
+    """主动开口的空闲阈值（分钟）：ext.heartbeat 可覆盖全局"""
+    return max(0, int(_heartbeat_ext(character).get(
+        "proactive_min_idle_min", settings.heartbeat_proactive_min_idle_min
+    )))
+
+
+def proactive_probability(character: Character) -> float:
+    """满足条件后转为主动消息的概率（0-1）：ext.heartbeat 可覆盖全局"""
+    value = float(_heartbeat_ext(character).get(
+        "proactive_probability", settings.heartbeat_proactive_probability
+    ))
+    return max(0.0, min(value, 1.0))
 
 
 def _parse_hhmm(value) -> time | None:
@@ -98,11 +128,44 @@ def validate_types(types: list) -> None:
             raise ValueError(f"不支持的心跳类型：{item}")
 
 
-def pick_type(job: HeartbeatJob) -> str | None:
-    """按配置顺序取首个当前已支持的类型（P3a 仅 monologue）"""
-    for item in job.types:
-        if item in SUPPORTED_TYPES:
-            return item
+async def _last_user_activity(db, character_id: int) -> datetime | None:
+    """最近用户活动时间：取内心状态与最近会话中用户消息的较新者（防 last_user_at 滞后）"""
+    candidates: list[datetime] = []
+    state = await db.get(CharacterState, character_id)
+    if state is not None and state.last_user_at is not None:
+        candidates.append(state.last_user_at)
+    conversation = await _latest_conversation(db, character_id)
+    if conversation is not None:
+        result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation.id, Message.role == "user")
+            .order_by(Message.id.desc())
+            .limit(1)
+        )
+        message = result.scalar_one_or_none()
+        if message is not None:
+            candidates.append(message.created_at)
+    return max(candidates) if candidates else None
+
+
+async def choose_type(db, job: HeartbeatJob) -> str | None:
+    """本轮执行类型：满足主动条件且概率命中 → proactive，否则回落 monologue。
+
+    触发条件（P3b）：类型含 proactive + 距上次用户消息 ≥ 空闲阈值 + 概率抖动命中；
+    未命中且配置含 monologue 时改为独白；两者都不可用返回 None（跳过本轮）。
+    """
+    types = job.types
+    if "proactive" in types:
+        character = await db.get(Character, job.character_id)
+        if character is not None:
+            last = await _last_user_activity(db, job.character_id)
+            idle_ok = last is None or (datetime.now() - last) >= timedelta(
+                minutes=proactive_min_idle_min(character)
+            )
+            if idle_ok and random.random() < proactive_probability(character):
+                return "proactive"
+    if "monologue" in types:
+        return "monologue"
     return None
 
 
@@ -278,6 +341,20 @@ def _time_note(state: CharacterState | None, now: datetime) -> str:
     return "\n".join(lines)
 
 
+def _apply_state(state: CharacterState, parsed: dict) -> None:
+    """把生成结果中的心情/关注/唤醒度写入内心状态（缺省字段不覆盖）"""
+    mood = str(parsed.get("mood") or "").strip()
+    focus = str(parsed.get("current_focus") or "").strip()
+    if mood:
+        state.mood = mood[:64]
+    if focus:
+        state.current_focus = focus[:255]
+    arousal = parsed.get("arousal")
+    if arousal is not None:
+        state.arousal = max(0.0, min(float(arousal), 1.0))
+    state.last_beat_at = datetime.now()
+
+
 async def _run_monologue(db, character: Character, conversation: Conversation | None, run: HeartbeatRun) -> None:
     conv_id = conversation.id if conversation is not None else 0
     ctx = await memory_service.assemble_context(
@@ -307,17 +384,41 @@ async def _run_monologue(db, character: Character, conversation: Conversation | 
     run.memory_id = memory.id
     run.output = content
     run.tokens = estimate_tokens(content)
+    _apply_state(state, parsed)
+    await db.commit()
 
-    mood = str(parsed.get("mood") or "").strip()
-    focus = str(parsed.get("current_focus") or "").strip()
-    if mood:
-        state.mood = mood[:64]
-    if focus:
-        state.current_focus = focus[:255]
-    arousal = parsed.get("arousal")
-    if arousal is not None:
-        state.arousal = max(0.0, min(float(arousal), 1.0))
-    state.last_beat_at = datetime.now()
+
+async def _run_proactive(db, character: Character, conversation: Conversation | None, run: HeartbeatRun) -> None:
+    """主动消息：默认最近活跃会话（无则新建），消息与记忆任务同事务落库（复用 enqueue_ingest）"""
+    if conversation is None:
+        conversation = await get_or_create_conversation(db, character.id)
+        run.conversation_id = conversation.id
+    ctx = await memory_service.assemble_context(
+        db, character, conversation.id, "", touch=True, mode="proactive"
+    )
+    state = await memory_service.get_or_create_state(db, character.id)
+    provider, model_cfg = await _resolve_llm(db, character)
+    parsed = await proactive.generate(
+        provider, model_cfg, ctx["system"], _time_note(state, run.started_at)
+    )
+    content = str(parsed.get("message") or "").strip()
+    if not content:
+        raise RuntimeError("主动消息生成失败（空输出）")
+
+    message = Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=content,
+        meta_json=json.dumps({"source": "heartbeat", "run_id": run.id}, ensure_ascii=False),
+    )
+    db.add(message)
+    await db.flush()
+    # source_start_id=0：无用户侧；与消息同事务入队，worker 按角色输出抽取记忆
+    memory_service.enqueue_ingest(db, character.id, conversation.id, 0, message.id)
+    run.message_id = message.id
+    run.output = content
+    run.tokens = estimate_tokens(content)
+    _apply_state(state, parsed)
     await db.commit()
 
 
@@ -353,6 +454,8 @@ async def run_heartbeat(db, job: HeartbeatJob, run_type: str = "monologue") -> H
     try:
         if run_type == "monologue":
             await _run_monologue(db, character, conversation, run)
+        elif run_type == "proactive":
+            await _run_proactive(db, character, conversation, run)
         run.status = "done"
     except Exception as e:  # noqa: BLE001 单次失败不影响调度
         run.status = "failed"
@@ -361,7 +464,32 @@ async def run_heartbeat(db, job: HeartbeatJob, run_type: str = "monologue") -> H
     run.finished_at = datetime.now()
     await db.commit()
     await db.refresh(run)
+    if run.status == "done":
+        await _broadcast(run)
     return run
+
+
+async def _broadcast(run: HeartbeatRun) -> None:
+    """推送心跳事件（在线用户实时收到；离线用户经 messages 历史回放）"""
+    try:
+        if run.type == "proactive":
+            await ws_service.broadcast_heartbeat(
+                character_id=run.character_id,
+                conversation_id=run.conversation_id,
+                run_id=run.id,
+                run_type=run.type,
+                message=run.output,
+            )
+        elif run.type == "monologue":
+            await ws_service.broadcast_heartbeat(
+                character_id=run.character_id,
+                conversation_id=run.conversation_id,
+                run_id=run.id,
+                run_type=run.type,
+                monologue=run.output,
+            )
+    except Exception as e:  # noqa: BLE001 广播失败不影响心跳结果
+        logger.warning("心跳事件广播失败（run #%s）：%s", run.id, e)
 
 
 async def list_runs(db, character_id: int, limit: int = 20) -> list[HeartbeatRun]:
@@ -447,9 +575,9 @@ async def run_worker_once(processor=None) -> bool:
         if not jobs:
             return False
         job = jobs[0]
-        run_type = pick_type(job)
         try:
-            if run_type is None:  # 配置为该角色没有当前支持的类型（如仅 proactive），按节奏跳过
+            run_type = await choose_type(db, job)
+            if run_type is None:  # 无满足条件的类型（如仅 proactive 且用户刚说过话），按节奏跳过
                 job.last_run_at = datetime.now()
                 job.next_run_at = compute_next_run_at(job, job.last_run_at)
             else:

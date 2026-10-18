@@ -26,7 +26,7 @@ try:
     from app.main import app  # noqa: E402
     from app.config import ROOT_DIR  # noqa: E402
     from app.db.session import engine  # noqa: E402
-    from app.services import heartbeat_service  # noqa: E402
+    from app.services import chat_service, heartbeat_service  # noqa: E402
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -281,7 +281,7 @@ def main() -> None:
         class _FakeMonologueLLM:
             async def chat(self, messages, *, model, temperature, max_tokens):
                 for ch in (
-                    '{"monologue": "冒烟独白", "mood": "平静", '
+                    '{"monologue": "冒烟独白", "message": "冒烟消息", "mood": "平静", '
                     '"current_focus": "冒烟", "arousal": 0.3}'
                 ):
                     yield ch
@@ -321,6 +321,61 @@ def main() -> None:
             r.status_code == 200 and r.json()["mood"] == "平静" and r.json()["last_beat_at"],
             r.text,
         )
+
+        # 3.9 WS 心跳事件推送（P3b）：订阅 + ping/pong + 主动消息离线回放
+        with client.websocket_connect(f"/api/v1/ws?character_id={new_id}") as ws:
+            ws.send_text("ping")
+            check("WS ping → pong", ws.receive_json() == {"type": "pong"}, "")
+
+            r = client.post(f"/api/v1/heartbeat/characters/{new_id}/run", json={"type": "monologue"})
+            event = ws.receive_json()
+            check(
+                "WS 收到独白事件",
+                r.status_code == 200
+                and event.get("type") == "heartbeat"
+                and event["data"]["type"] == "monologue"
+                and event["data"]["monologue"] == "冒烟独白",
+                f"{r.text} / {event}",
+            )
+
+            # 主动消息会生成 memory_jobs，记忆 worker 需要 provider：替换为 Fake 避免真实调用
+            class _FakeExtractLLM:
+                async def chat(self, messages, *, model, temperature, max_tokens):
+                    for ch in "[]":
+                        yield ch
+
+            async def _fake_memory_resolve(db, character, **kwargs):
+                return _FakeExtractLLM(), {"model": "fake"}
+
+            chat_service.resolve_provider = _fake_memory_resolve
+
+            r = client.post(f"/api/v1/heartbeat/characters/{new_id}/run", json={"type": "proactive"})
+            body = r.json() if r.status_code == 200 else {}
+            event = ws.receive_json()
+            check(
+                "WS 收到主动消息事件",
+                r.status_code == 200
+                and body.get("status") == "done"
+                and event["data"]["type"] == "proactive"
+                and event["data"]["message"] == "冒烟消息",
+                f"{r.text} / {event}",
+            )
+
+        r = client.get(f"/api/v1/conversations?character_id={new_id}")
+        conv_id = r.json()[0]["id"] if r.status_code == 200 and r.json() else None
+        check(
+            "主动消息会话可见（离线回放）",
+            r.status_code == 200 and conv_id is not None,
+            r.text,
+        )
+        if conv_id:
+            r = client.get(f"/api/v1/conversations/{conv_id}/messages")
+            check(
+                "历史回放包含主动消息",
+                r.status_code == 200 and any(m["content"] == "冒烟消息" for m in r.json()),
+                r.text,
+            )
+
         heartbeat_service.set_resolver(None)
 
         # 4. 聊天错误路径（不触发真实 LLM）

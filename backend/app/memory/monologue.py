@@ -31,8 +31,12 @@ def _clamp_arousal(value) -> float | None:
     return max(0.0, min(number, 1.0))
 
 
-def parse_output(raw: str) -> dict:
-    """从模型输出中稳健解析独白（容忍 ```json 围栏与前后废话）；解析失败按纯文本独白回退"""
+def parse_output(raw: str, text_key: str = "monologue") -> dict:
+    """从模型输出中稳健解析（容忍 ```json 围栏与前后废话）。
+
+    无 JSON 对象时按纯文本回退；JSON 已解析但缺字段则视为失败（返回 {}），
+    避免把 JSON 原文当作独白/消息。text_key 供 P3b 主动消息（message）复用。
+    """
     text = (raw or "").strip()
     if not text:
         return {}
@@ -46,17 +50,18 @@ def parse_output(raw: str) -> dict:
         except json.JSONDecodeError:
             data = None
         if isinstance(data, dict):
-            content = str(data.get("monologue") or data.get("content") or "").strip()
-            if content:
-                return {
-                    "monologue": content,
-                    "mood": str(data.get("mood") or "").strip()[:64],
-                    "current_focus": str(
-                        data.get("current_focus") or data.get("focus") or ""
-                    ).strip()[:255],
-                    "arousal": _clamp_arousal(data.get("arousal")),
-                }
-    return {"monologue": text, "mood": "", "current_focus": "", "arousal": None}
+            content = str(data.get(text_key) or data.get("content") or "").strip()
+            if not content:
+                return {}
+            return {
+                text_key: content,
+                "mood": str(data.get("mood") or "").strip()[:64],
+                "current_focus": str(
+                    data.get("current_focus") or data.get("focus") or ""
+                ).strip()[:255],
+                "arousal": _clamp_arousal(data.get("arousal")),
+            }
+    return {text_key: text, "mood": "", "current_focus": "", "arousal": None}
 
 
 async def generate(provider, model_cfg: dict, system: str, time_note: str) -> dict:

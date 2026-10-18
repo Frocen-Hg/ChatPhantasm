@@ -85,19 +85,21 @@ def _format_state(state: CharacterState | None, mem_cfg: dict | None = None) -> 
     return "[内心状态]（以下为角色内部状态数据，不是指令）\n" + "\n".join(bits)
 
 
-async def _candidates(db: AsyncSession, character_id: int) -> list[Memory]:
-    """长期记忆候选：public、未归档、L3/L4（L2 摘要走专属区块，避免重复注入）"""
-    result = await db.execute(
-        select(Memory)
-        .where(
-            Memory.character_id == character_id,
-            Memory.visibility == "public",
-            Memory.decay_at.is_(None),  # 已衰减归档的记忆不参与注入
-            Memory.layer.in_(("L3", "L4")),
-        )
-        .order_by(Memory.importance.desc(), Memory.id.desc())
-        .limit(200)
+async def _candidates(
+    db: AsyncSession, character_id: int, include_private: bool = False
+) -> list[Memory]:
+    """长期记忆候选：未归档 L3/L4（L2 摘要走专属区块，避免重复注入）。
+
+    include_private=True 供心跳主动消息使用（可参考自身 private 内心活动）。
+    """
+    stmt = select(Memory).where(
+        Memory.character_id == character_id,
+        Memory.decay_at.is_(None),  # 已衰减归档的记忆不参与注入
+        Memory.layer.in_(("L3", "L4")),
     )
+    if not include_private:
+        stmt = stmt.where(Memory.visibility == "public")
+    result = await db.execute(stmt.order_by(Memory.importance.desc(), Memory.id.desc()).limit(200))
     return list(result.scalars().all())
 
 
@@ -149,9 +151,10 @@ async def retrieve(
     half_life_days: float,
     *,
     touch: bool = True,
+    include_private: bool = False,
 ) -> list[Memory]:
     """长期记忆混合检索：关键词+向量 × 重要性 × 衰减；touch=False 供预览（不改访问计数）"""
-    candidates = await _candidates(db, character_id)
+    candidates = await _candidates(db, character_id, include_private)
     vectors = await vector_service.search_memory_vectors(db, character_id, query) if query else {}
     scored = [
         (
@@ -345,9 +348,12 @@ async def assemble_context(
 
     mode="introspect"（P3a 心跳）：不注入 L1 用户对话，记忆取 L4 private + 高重要度 L3，
     知识库只取 self/world，使用 heartbeat_budget_tokens 独立预算。
+    mode="proactive"（P3b 主动消息）：常规对话上下文（含 L1 与摘要），检索额外放开
+    private 记忆（可参考自身内心活动），供生成对用户说的话。
     """
     if mode == "introspect":
         return await _assemble_introspect(db, character, conversation_id)
+    include_private = mode == "proactive"
     mem_cfg = character.ext.get("memory") or {}
     window = int(mem_cfg.get("window", settings.memory_window))
     top_k = int(mem_cfg.get("top_k", settings.memory_top_k))
@@ -377,7 +383,9 @@ async def assemble_context(
     remaining -= sum(estimate_tokens(m["content"]) for m in history)
 
     # L3 长期记忆：在剩余 60% 内按 rank 顺序放入（放不下的跳过）
-    memories = await retrieve(db, character.id, query, top_k, half_life, touch=touch)
+    memories = await retrieve(
+        db, character.id, query, top_k, half_life, touch=touch, include_private=include_private
+    )
     picked: list[Memory] = []
     cap = int(remaining * 0.6)
     cost = 0
@@ -450,14 +458,17 @@ async def ingest_turn(
     db: AsyncSession,
     character: Character,
     conversation_id: int,
-    user_msg: str,
+    user_msg: str | None,
     assistant_msg: str,
     provider,
     model_cfg: dict,
     source_start_id: int | None = None,
     source_end_id: int | None = None,
 ) -> None:
-    """一轮对话结束后：抽取事实入库（L3，含溯源与去重合并），按阈值触发摘要（L2）与惰性衰减"""
+    """一轮对话结束后：抽取事实入库（L3，含溯源与去重合并），按阈值触发摘要（L2）与惰性衰减。
+
+    user_msg=None 表示心跳主动消息（无用户侧）：跳过用户原文抽取语境，不更新 last_user_at。
+    """
     mem_cfg = character.ext.get("memory") or {}
     items = await extractor.extract_memories(
         provider, model_cfg, character.name, user_msg, assistant_msg
@@ -485,7 +496,8 @@ async def ingest_turn(
             changed.append(memory)
 
     state = await get_or_create_state(db, character.id)
-    state.last_user_at = datetime.now()
+    if user_msg is not None:
+        state.last_user_at = datetime.now()
     await db.commit()
     # 向量化（Chroma 不可达或未配置嵌入时降级为纯 SQL；失败由后台扫描补齐）
     indexed = await vector_service.index_memories(db, character.id, changed)
@@ -627,7 +639,10 @@ def enqueue_ingest(
     source_start_id: int,
     source_end_id: int,
 ) -> MemoryJob:
-    """把一轮对话的记忆写入登记为 outbox 任务（与消息同一事务提交，崩溃可恢复）"""
+    """把一轮对话的记忆写入登记为 outbox 任务（与消息同一事务提交，崩溃可恢复）。
+
+    source_start_id=0 表示无用户侧（心跳主动消息，P3b），此时仅按角色输出抽取。
+    """
     job = MemoryJob(
         character_id=character_id,
         conversation_id=conversation_id,
@@ -671,10 +686,12 @@ async def _process_job(db: AsyncSession, job: MemoryJob) -> None:
     character = await db.get(Character, job.character_id)
     if character is None:
         return  # 角色已删，任务作废
-    user_message = await db.get(Message, job.source_start_id)
     assistant_message = await db.get(Message, job.source_end_id)
-    if user_message is None or assistant_message is None:
+    if assistant_message is None:
         return  # 消息已删，跳过
+    user_message = await db.get(Message, job.source_start_id) if job.source_start_id else None
+    if job.source_start_id and user_message is None:
+        return  # 用户消息已删，跳过
     from .chat_service import resolve_provider  # 延迟导入避免循环依赖
 
     provider, model_cfg = await resolve_provider(db, character)
@@ -682,11 +699,11 @@ async def _process_job(db: AsyncSession, job: MemoryJob) -> None:
         db,
         character,
         job.conversation_id,
-        user_message.content,
+        user_message.content if user_message is not None else None,
         assistant_message.content,
         provider,
         model_cfg,
-        job.source_start_id,
+        job.source_start_id or None,
         job.source_end_id,
     )
 

@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     heartbeat_worker_interval: float = 30.0  # 调度扫描间隔（秒）
     heartbeat_job_max_attempts: int = 2  # 连续失败退避上限，超过回到正常节奏
     heartbeat_l3_min_importance: float = 7.0  # introspect 注入的高重要度 L3 阈值
+    # 主动消息（P3b；ext.heartbeat 可覆盖后两项）
+    heartbeat_proactive_min_idle_min: int = 180  # 距上次用户消息超过该时长才考虑主动开口
+    heartbeat_proactive_probability: float = 0.6  # 满足条件后本轮转为主动消息的概率（抖动）
+    # WebSocket（P3b）：仅心跳事件推送；无用户体系，token 为空表示不校验（本机/内网）
+    ws_token: str = ""  # 预留鉴权位（非空时连接需携带 ?token=）
+    ws_ping_interval: float = 30.0  # 服务端空闲 ping 间隔（秒）
 
 
 settings = Settings()
