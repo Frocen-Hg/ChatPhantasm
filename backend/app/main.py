@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
         await kb_service.stop_worker(kb_worker)
 
 
-app = FastAPI(title="ChatPhantasm", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="ChatPhantasm", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
