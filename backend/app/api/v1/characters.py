@@ -1,12 +1,13 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...db.models import Character
+from ...db.models import Character, QqBinding
 from ...db.session import get_db
 from ...schemas.character import CharacterCreate, CharacterUpdate
-from ...services import character_service
+from ...services import character_service, qq_service
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
@@ -58,5 +59,10 @@ async def delete_character(character_id: int, db: AsyncSession = Depends(get_db)
     character = await db.get(Character, character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="角色不存在")
+    binding_ids = (
+        await db.execute(select(QqBinding.id).where(QqBinding.character_id == character_id))
+    ).scalars().all()
+    for binding_id in binding_ids:
+        qq_service.bridge.forget_binding(binding_id)
     await character_service.delete_character(db, character)
     return {"ok": True}

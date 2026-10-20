@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,6 +95,7 @@ async def stream_reply(
     reply = "".join(parts)
     assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply)
     db.add(assistant_message)
+    conversation.updated_at = datetime.now()
     await db.flush()  # 取消息 id，供任务溯源
     enqueue_ingest(db, character.id, conversation.id, user_message.id, assistant_message.id)
     await db.commit()

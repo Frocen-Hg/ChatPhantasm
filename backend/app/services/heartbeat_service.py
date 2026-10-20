@@ -373,7 +373,8 @@ async def _latest_conversation(db, character_id: int) -> Conversation | None:
     result = await db.execute(
         select(Conversation)
         .where(Conversation.character_id == character_id)
-        .order_by(Conversation.id.desc())
+        # QQ 群消息会刷新 updated_at：主动消息优先落到最近活跃的会话（进而投递到对应群）
+        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .limit(1)
     )
     return result.scalar_one_or_none()
@@ -471,6 +472,7 @@ async def _run_proactive(db, character: Character, conversation: Conversation | 
     run.message_id = message.id
     run.output = content
     run.tokens = estimate_tokens(content)
+    conversation.updated_at = datetime.now()
     _apply_state(state, parsed)
     await db.commit()
 
@@ -521,7 +523,20 @@ async def run_heartbeat(
     await db.commit()
     await db.refresh(run)
     if run.status == "done":
+        await db.commit()  # 结束读事务，避免 QQ 投递的新会话写入与 SQLite 读锁互相等待
         await _broadcast(run)
+        if run.type == "proactive":
+            # 若该会话绑定了 QQ 群且开启主动消息，则同步投递到群聊（失败不影响心跳）
+            try:
+                from .qq_service import dispatch_proactive
+
+                await dispatch_proactive(
+                    character_id=run.character_id,
+                    conversation_id=run.conversation_id,
+                    text=run.output,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("心跳主动消息投递 QQ 失败（run #%s）：%s", run.id, e)
     return run
 
 

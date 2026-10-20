@@ -14,6 +14,9 @@ from ..db.models import (
     KbLore,
     Memory,
     MemoryJob,
+    QqBinding,
+    QqMember,
+    QqReplyLog,
 )
 from . import vector_service
 
@@ -104,6 +107,14 @@ async def delete_character(db: AsyncSession, character: Character) -> None:
     await db.execute(delete(KbJob).where(KbJob.character_id == character.id))
     await db.execute(delete(KbLore).where(KbLore.character_id == character.id))
     await db.execute(delete(KbDocument).where(KbDocument.character_id == character.id))
+    # QQ 群绑定：先清理成员/发言日志，再删绑定
+    binding_ids = (
+        await db.execute(select(QqBinding.id).where(QqBinding.character_id == character.id))
+    ).scalars().all()
+    if binding_ids:
+        await db.execute(delete(QqMember).where(QqMember.binding_id.in_(binding_ids)))
+        await db.execute(delete(QqReplyLog).where(QqReplyLog.binding_id.in_(binding_ids)))
+        await db.execute(delete(QqBinding).where(QqBinding.id.in_(binding_ids)))
     character_id = character.id
     await db.delete(character)
     await db.commit()

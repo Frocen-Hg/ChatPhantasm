@@ -9,6 +9,7 @@ from .memory import (
     StateUpdate,
 )
 from .provider import ProviderCreate, ProviderTest, ProviderUpdate
+from .qq import QqBindingCreate, QqBindingUpdate, QqMemberUpdate, QqTestSendRequest
 
 __all__ = [
     "ChatRequest",
@@ -26,4 +27,8 @@ __all__ = [
     "ProviderCreate",
     "ProviderUpdate",
     "ProviderTest",
+    "QqBindingCreate",
+    "QqBindingUpdate",
+    "QqMemberUpdate",
+    "QqTestSendRequest",
 ]

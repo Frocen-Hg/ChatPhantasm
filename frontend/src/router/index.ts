@@ -5,6 +5,7 @@ import CharacterEditView from '../views/CharacterEditView.vue'
 import HeartbeatDashboard from '../views/HeartbeatDashboard.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
 import MemoryManagerView from '../views/MemoryManagerView.vue'
+import QqDashboard from '../views/QqDashboard.vue'
 import SettingsView from '../views/SettingsView.vue'
 
 const router = createRouter({
@@ -17,6 +18,7 @@ const router = createRouter({
     { path: '/characters/:id/knowledge', component: KnowledgeView, props: true, meta: { bare: true } },
     { path: '/memory', component: MemoryManagerView },
     { path: '/heartbeat', component: HeartbeatDashboard },
+    { path: '/qq', component: QqDashboard },
     { path: '/settings', component: SettingsView }
   ]
 })

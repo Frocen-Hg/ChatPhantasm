@@ -13,6 +13,7 @@ const route = useRoute()
         <RouterLink to="/characters">角色卡</RouterLink>
         <RouterLink to="/memory">记忆</RouterLink>
         <RouterLink to="/heartbeat">心跳</RouterLink>
+        <RouterLink to="/qq">QQ 群聊</RouterLink>
         <RouterLink to="/settings">设置</RouterLink>
       </nav>
     </aside>

@@ -1,8 +1,8 @@
 # Chat Phantasm
 
-LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量检索）、心跳 / 内心独白 / 主动消息，支持外部 API 与本地 Ollama。
+LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量检索）、心跳 / 内心独白 / 主动消息、QQ 群聊接入（NapCat / OneBot 11），支持外部 API 与本地 Ollama。
 
-当前进度：**P3 完成（v0.4.0）**（P0 骨架 → P1 分层记忆 → P2 向量记忆与知识库 → P3 心跳 / 内心独白 / 主动消息 / WS 推送）；下一阶段 P4 角色卡 Schema 兼容。
+当前进度：**v0.5.0**（P0 骨架 → P1 分层记忆 → P2 向量记忆与知识库 → P3 心跳 / 内心独白 / 主动消息 / WS 推送 → QQ 群聊接入）；下一阶段 P4 角色卡 Schema 兼容。
 
 ## 功能特性
 
@@ -14,6 +14,7 @@ LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量�
 - **心跳与内心世界**（v0.4.0）：每角色可配心跳（开关/间隔/类型/静默时段/每日上限/抖动，默认关闭）；内心独白写入 L4 private 记忆并更新内心状态（不直接注入对话、经状态成为"潜台词"）；用户久未说话时可按概率主动开口（落消息并进入记忆流水线，离线可回放）。
 - **实时推送**（v0.4.0）：WebSocket `/api/v1/ws` 按角色/会话订阅心跳事件；前端断线指数退避重连；聊天页实时呈现「主动开口 / 内心独白」气泡。
 - **心跳面板**（v0.4.0）：`/heartbeat` 配置 / 运行记录 / 试跑（试跑不改排程、计入当日次数）；记忆页提供「内心活动时间线」。
+- **QQ 群聊接入**（v0.5.0）：NapCat / OneBot 11 反向 WebSocket；群 ↔ 角色绑定，每群一条独立会话；支持仅 @、关键词、概率闲聊、全量四种触发方式；冷却、每小时/每日上限、消息防抖合并；群成员标签与关系备注注入上下文；心跳主动消息可投递到绑定群；管理面板 `/qq`。
 - **模型配置**：Provider 管理（OpenAI 兼容 / Ollama）+ 功能位路由（聊天 / 嵌入 / 心跳等不同功能用不同模型/端点，心跳未绑定回落聊天）+ 嵌入模型独立配置（DeepSeek 无 embeddings）。
 
 ## 项目结构
@@ -25,8 +26,8 @@ ChatPhantasm/
 │   │   ├── main.py            # FastAPI 入口（lifespan：建表/seed/启动记忆、知识库与心跳 worker）
 │   │   ├── config.py          # pydantic-settings（.env 唯一密钥来源）
 │   │   ├── db/                # SQLAlchemy async 模型与会话
-│   │   ├── api/v1/            # chat / characters / conversations / providers / memory / kb / heartbeat / ws
-│   │   ├── services/          # 编排：chat / character / provider / memory / vector / kb / heartbeat / ws
+│   │   ├── api/v1/            # chat / characters / conversations / providers / memory / kb / heartbeat / qq / ws
+│   │   ├── services/          # 编排：chat / character / provider / memory / vector / kb / heartbeat / qq / ws
 │   │   ├── memory/            # 记忆算法：retriever / extractor / summarizer / sanitize / tokens / monologue / proactive
 │   │   ├── rag/               # 向量库抽象与 Chroma 服务模式实现
 │   │   ├── providers/         # LLM 抽象：openai_compat + ollama
@@ -37,7 +38,7 @@ ChatPhantasm/
 │   └── pyproject.toml
 ├── frontend/
 │   └── src/                   # Vue3 + Vite + TS + Pinia + Router
-│       ├── views/             # Chat / Characters / CharacterEdit / MemoryManager / Knowledge / Heartbeat / Settings
+│       ├── views/             # Chat / Characters / CharacterEdit / MemoryManager / Knowledge / Heartbeat / Qq / Settings
 │       ├── stores/  api/  types/
 ├── prompts/                   # 系统提示词与记忆抽取/摘要/独白/主动消息模板
 └── docker-compose.yml         # postgres + chroma + backend + frontend
@@ -66,7 +67,16 @@ python -m app.cli
 - `.env` 必需：`DEEPSEEK_API_KEY`（密钥只存 `.env`，gitignored）。默认模型 `deepseek-v4-pro`。
 - **嵌入模型需单独配置**（DeepSeek 无 embeddings 端点）：设置页「功能位模型 → 嵌入」绑定 Ollama `nomic-embed-text`（维度 768）或其他 OpenAI 兼容嵌入端点。
 - 默认数据库为本地 SQLite `data.db`；设 `DATABASE_URL=postgresql+asyncpg://...` 可切换 PostgreSQL。
-- 回归测试（独立脚本，临时库，不调 LLM）：`python backend/tests/smoke.py`、`test_seed.py`、`test_jobs.py`、`test_migrations.py`、`test_vector.py`、`test_kb.py`、`test_heartbeat.py`；前端 `npm run typecheck`。
+- 回归测试（独立脚本，临时库，不调 LLM）：`python backend/tests/smoke.py`、`test_seed.py`、`test_jobs.py`、`test_migrations.py`、`test_vector.py`、`test_kb.py`、`test_heartbeat.py`、`test_qq.py`；前端 `npm run typecheck`。
+
+### QQ 群聊（NapCat）
+
+1. 启动后端（默认 `http://127.0.0.1:8000`），在 `.env` 可选设置 `QQ_TOKEN`（与 NapCat 的 token 一致；留空表示不校验）。
+2. 启动 `NapCat.Shell` 并登录 QQ。仓库已提供 `NapCat.Shell/config/onebot11.json` 模板：反向 WebSocket 指向 `ws://127.0.0.1:8000/api/v1/qq/ws`。若 NapCat 已生成 `onebot11_<QQ号>.json`，请在 WebUI「网络配置」中手动添加同样的 WebSocket 客户端（消息格式 `array`）。
+3. 打开前端「QQ 群聊」页：新增绑定，选择角色、填写群号（可点「群列表」从已连接账号拉取）、设置触发方式与频率。
+4. 群成员首次发言后会自动出现在「群成员标签」表；可设置标签（如 `朋友`、`管理员`）与关系备注，或勾选「忽略」。
+5. 群内所有消息都会写入该绑定专属会话，可在「对话」页查看；机器人回复由 @ / 关键词 / 概率触发，并受冷却与每小时/每日上限约束。
+6. 若希望心跳「主动消息」也发到群里：在绑定中勾选「允许心跳主动消息发到此群」，并在心跳面板启用 `proactive`。每轮心跳只投递到角色最近活跃的绑定群，避免多群同时刷屏。
 
 ## Docker 部署
 
@@ -112,6 +122,15 @@ docker compose up -d --build
 | POST | /heartbeat/characters/{id}/run | 试跑一次（不改排程，标记 is_manual） |
 | GET | /heartbeat/characters/{id}/runs | 心跳运行记录 |
 | WS | /ws?character_id=&conversation_id=&token= | 心跳事件推送（按角色/会话订阅，ping/pong 保活） |
+| GET | /qq/status | NapCat 连接状态 / 绑定统计 |
+| GET/POST | /qq/bindings | QQ 群绑定列表 / 新增 |
+| GET/PATCH/DELETE | /qq/bindings/{id} | 绑定详情 / 修改频率与触发配置 / 删除 |
+| GET | /qq/groups | 通过已连接账号拉取群列表 |
+| GET | /qq/bindings/{id}/members | 群成员（标签/印象/忽略）列表 |
+| PATCH | /qq/members/{id} | 修改成员标签 / 备注 / 忽略状态 |
+| GET | /qq/bindings/{id}/replies | 最近机器人发言记录 |
+| POST | /qq/bindings/{id}/send | 发送测试消息 |
+| WS | /qq/ws | NapCat OneBot 11 反向 WebSocket（支持 Authorization Bearer token） |
 | GET | /health | 健康检查 |
 
 ## 技术栈
@@ -125,4 +144,4 @@ docker compose up -d --build
 
 ## 演进路线
 
-P0 骨架 ✅ → P1 分层记忆 ✅ → P2 向量记忆与知识库 ✅ → P3 心跳 / 内心独白 / 主动消息 ✅（v0.4.0）→ P4 角色卡 Schema 兼容 → P5 发布。
+P0 骨架 ✅ → P1 分层记忆 ✅ → P2 向量记忆与知识库 ✅ → P3 心跳 / 内心独白 / 主动消息 ✅（v0.4.0）→ QQ 群聊接入 ✅（v0.5.0）→ P4 角色卡 Schema 兼容 → P5 发布。

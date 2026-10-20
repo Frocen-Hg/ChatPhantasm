@@ -5,6 +5,7 @@ from . import (
     kb_service,
     memory_service,
     provider_service,
+    qq_service,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "kb_service",
     "memory_service",
     "provider_service",
+    "qq_service",
 ]

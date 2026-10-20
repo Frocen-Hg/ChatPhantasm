@@ -3,7 +3,16 @@
 import json
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -303,3 +312,94 @@ class CharacterState(Base):
             return json.loads(self.relationship_json or "{}")
         except json.JSONDecodeError:
             return {}
+
+
+class QqBinding(Base):
+    """QQ 群绑定（NapCat/OneBot 11）：一个群对应一个角色与一条连续会话。
+
+    reply_mode 控制触发方式；频率字段约束机器人发言节奏。绑定与角色解耦，
+    同一角色可加入多个群，每个群维护独立会话与成员标签。
+    """
+
+    __tablename__ = "qq_bindings"
+    __table_args__ = (
+        UniqueConstraint("bot_uin", "group_id", name="uq_qq_bindings_bot_group"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    bot_uin: Mapped[str] = mapped_column(String(32), default="")  # 空=任一已连接账号
+    group_id: Mapped[str] = mapped_column(String(32), index=True)
+    group_name: Mapped[str] = mapped_column(String(128), default="")
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id"), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reply_mode: Mapped[str] = mapped_column(String(16), default="mention")  # mention|keyword|ambient|all
+    keywords_json: Mapped[str] = mapped_column(Text, default="[]")
+    reply_probability: Mapped[float] = mapped_column(Float, default=0.15)  # ambient 触发概率
+    min_interval_sec: Mapped[int] = mapped_column(Integer, default=90)  # 两次回复最小间隔
+    max_replies_per_hour: Mapped[int] = mapped_column(Integer, default=12)  # 0=不限
+    max_replies_per_day: Mapped[int] = mapped_column(Integer, default=80)  # 0=不限
+    debounce_sec: Mapped[float] = mapped_column(Float, default=3.0)  # 合并连续消息的窗口
+    mention_bypass_cooldown: Mapped[bool] = mapped_column(Boolean, default=True)  # 被@时跳过冷却
+    proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # 心跳主动消息可发到本群
+    group_note: Mapped[str] = mapped_column(Text, default="")  # 群背景/氛围说明
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def keywords(self) -> list[str]:
+        try:
+            return [str(k) for k in json.loads(self.keywords_json or "[]")]
+        except json.JSONDecodeError:
+            return []
+
+
+class QqMember(Base):
+    """群成员标签：管理员维护的昵称补充、人物标签与关系备注，注入群聊上下文。"""
+
+    __tablename__ = "qq_members"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "user_id", name="uq_qq_members_binding_user"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    binding_id: Mapped[int] = mapped_column(ForeignKey("qq_bindings.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    nickname: Mapped[str] = mapped_column(String(128), default="")
+    card: Mapped[str] = mapped_column(String(128), default="")
+    role: Mapped[str] = mapped_column(String(16), default="member")  # owner|admin|member
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    note: Mapped[str] = mapped_column(Text, default="")  # 角色对此人的印象/关系
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)  # 不回应且不写入上下文
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def tags(self) -> list[str]:
+        try:
+            return [str(t) for t in json.loads(self.tags_json or "[]")]
+        except json.JSONDecodeError:
+            return []
+
+
+class QqReplyLog(Base):
+    """机器人发言日志：频率控制统计与面板回看（trigger=mention/keyword/ambient/all/proactive）。"""
+
+    __tablename__ = "qq_reply_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    binding_id: Mapped[int] = mapped_column(ForeignKey("qq_bindings.id"), index=True)
+    character_id: Mapped[int] = mapped_column(ForeignKey("characters.id"), index=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id"), nullable=True
+    )
+    user_id: Mapped[str] = mapped_column(String(32), default="")  # 触发者，主动消息为空
+    trigger: Mapped[str] = mapped_column(String(16))
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # assistant messages.id
+    content: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)

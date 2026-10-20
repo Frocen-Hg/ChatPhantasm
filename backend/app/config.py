@@ -88,6 +88,15 @@ class Settings(BaseSettings):
     # WebSocket（P3b）：仅心跳事件推送；无用户体系，token 为空表示不校验（本机/内网）
     ws_token: str = ""  # 预留鉴权位（非空时连接需携带 ?token=）
     ws_ping_interval: float = 30.0  # 服务端空闲 ping 间隔（秒）
+    # QQ / OneBot 11（NapCat 反向 WebSocket）
+    qq_enabled: bool = True  # 关闭后 WS 端点拒绝新连接（已连接不受影响）
+    qq_token: str = ""  # 与 NapCat websocketClients.token 一致；为空不校验
+    qq_action_timeout: float = 15.0  # 调用 OneBot action 的超时（秒）
+    qq_max_message_chars: int = 1200  # 单条群消息写入上下文的字符上限
+    qq_max_reply_chars: int = 600  # 机器人单条回复的字符上限
+    qq_reply_max_tokens: int = 300  # 群聊回复 token 上限（比私聊更短）
+    qq_max_batch_wait_sec: float = 12.0  # 合并连续消息的最长等待（秒）
+    qq_member_block_limit: int = 30  # 注入 system 的成员标签条数上限
 
 
 settings = Settings()
