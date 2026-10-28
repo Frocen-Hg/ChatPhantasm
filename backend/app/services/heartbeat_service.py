@@ -528,13 +528,18 @@ async def run_heartbeat(
         if run.type == "proactive":
             # 若该会话绑定了 QQ 群且开启主动消息，则同步投递到群聊（失败不影响心跳）
             try:
-                from .qq_service import dispatch_proactive
+                from ..plugin_system import get_plugin
 
-                await dispatch_proactive(
-                    character_id=run.character_id,
-                    conversation_id=run.conversation_id,
-                    text=run.output,
+                qq_plugin = get_plugin("qq")
+                dispatch = (
+                    getattr(qq_plugin, "dispatch_proactive", None) if qq_plugin is not None else None
                 )
+                if dispatch is not None:
+                    await dispatch(
+                        character_id=run.character_id,
+                        conversation_id=run.conversation_id,
+                        text=run.output,
+                    )
             except Exception as e:  # noqa: BLE001
                 logger.warning("心跳主动消息投递 QQ 失败（run #%s）：%s", run.id, e)
     return run

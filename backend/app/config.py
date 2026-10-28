@@ -88,7 +88,10 @@ class Settings(BaseSettings):
     # WebSocket（P3b）：仅心跳事件推送；无用户体系，token 为空表示不校验（本机/内网）
     ws_token: str = ""  # 预留鉴权位（非空时连接需携带 ?token=）
     ws_ping_interval: float = 30.0  # 服务端空闲 ping 间隔（秒）
-    # QQ / OneBot 11（NapCat 反向 WebSocket）
+    # 插件系统（插件位于仓库根 plugins/ 目录）
+    enabled_plugins: str = "qq"  # 逗号分隔的启用插件名；空=全部加载
+    # QQ / OneBot 11 插件（plugins/qq；NapCat 反向 WebSocket）
+    napcat_shell_dir: str = ""  # NapCat.Shell 目录（可选）：配置后可调用 /qq/napcat/config 代写 onebot11.json
     qq_enabled: bool = True  # 关闭后 WS 端点拒绝新连接（已连接不受影响）
     qq_token: str = ""  # 与 NapCat websocketClients.token 一致；为空不校验
     qq_action_timeout: float = 15.0  # 调用 OneBot action 的超时（秒）

@@ -8,6 +8,7 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY requirements.txt /app/requirements.txt
 COPY backend /app/backend
 COPY prompts /app/prompts
+COPY plugins /app/plugins
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r /app/requirements.txt
 
 EXPOSE 8000

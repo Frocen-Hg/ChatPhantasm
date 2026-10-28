@@ -1,19 +1,20 @@
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...config import settings
-from ...db.models import Character, Conversation, Message, QqBinding, QqMember, QqReplyLog
-from ...db.session import get_db
-from ...schemas.qq import (
+from app.config import settings
+from app.db.models import Character, Conversation, Message, QqBinding, QqMember, QqReplyLog
+from app.db.session import get_db
+from .schemas import (
     QqBindingCreate,
     QqBindingUpdate,
     QqMemberUpdate,
     QqTestSendRequest,
 )
-from ...services import qq_service
+from . import service as qq_service
 
 router = APIRouter(prefix="/qq", tags=["qq"])
 
@@ -143,6 +144,75 @@ async def list_groups(bot_uin: str = ""):
         for item in groups
         if item.get("group_id")
     ]
+
+
+# ---- NapCat 管理（可选）：插件内置对 NapCat.Shell 的配置代写 ----
+
+
+@router.get("/napcat/info")
+async def napcat_info():
+    """NapCat 连接信息：反向 WS 地址与 token 是否启用；napcat_shell_dir 配置后可代写配置。"""
+    return {
+        "ws_url": "ws://127.0.0.1:8000/api/v1/qq/ws",
+        "token_required": bool(settings.qq_token),
+        "napcat_shell_dir": settings.napcat_shell_dir,
+        "can_manage": bool(settings.napcat_shell_dir),
+        "connected": qq_service.bridge.status()["connected"],
+    }
+
+
+@router.post("/napcat/config")
+async def write_napcat_config():
+    """把反向 WS 模板写入 NapCat.Shell/config/onebot11.json（需设置 NAPCAT_SHELL_DIR）。"""
+    if not settings.napcat_shell_dir:
+        raise HTTPException(
+            status_code=400,
+            detail="未设置 NAPCAT_SHELL_DIR（.env），无法代写 NapCat 配置",
+        )
+    config_dir = Path(settings.napcat_shell_dir) / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    target = config_dir / "onebot11.json"
+    target.write_text(
+        json.dumps(
+            {
+                "network": {
+                    "httpServers": [],
+                    "httpSseServers": [],
+                    "httpClients": [],
+                    "websocketServers": [],
+                    "websocketClients": [
+                        {
+                            "name": "ChatPhantasm",
+                            "enable": True,
+                            "url": "ws://127.0.0.1:8000/api/v1/qq/ws",
+                            "messagePostFormat": "array",
+                            "reportSelfMessage": False,
+                            "reconnectInterval": 5000,
+                            "token": settings.qq_token,
+                            "debug": False,
+                            "heartInterval": 30000,
+                            "verifyCertificate": True,
+                        }
+                    ],
+                    "plugins": [],
+                },
+                "musicSignUrl": "",
+                "enableLocalFile2Url": False,
+                "parseMultMsg": False,
+                "imageDownloadProxy": "",
+                "timeout": {
+                    "baseTimeout": 10000,
+                    "uploadSpeedKBps": 256,
+                    "downloadSpeedKBps": 256,
+                    "maxTimeout": 1800000,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {"ok": True, "path": str(target)}
 
 
 @router.get("/bindings")

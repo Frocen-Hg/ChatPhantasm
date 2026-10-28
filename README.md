@@ -1,8 +1,8 @@
 # Chat Phantasm
 
-LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量检索）、心跳 / 内心独白 / 主动消息、QQ 群聊接入（NapCat / OneBot 11），支持外部 API 与本地 Ollama。
+LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量检索）、心跳 / 内心独白 / 主动消息、QQ 群聊接入（NapCat / OneBot 11）、插件系统，支持外部 API 与本地 Ollama。
 
-当前进度：**v0.5.0**（P0 骨架 → P1 分层记忆 → P2 向量记忆与知识库 → P3 心跳 / 内心独白 / 主动消息 / WS 推送 → QQ 群聊接入）；下一阶段 P4 角色卡 Schema 兼容。
+当前进度：**v0.5.1**（P0 骨架 → P1 分层记忆 → P2 向量记忆与知识库 → P3 心跳 / 内心独白 / 主动消息 / WS 推送 → QQ 群聊接入 → 插件化）；下一阶段 P4 角色卡 Schema 兼容。
 
 ## 功能特性
 
@@ -15,6 +15,7 @@ LLM 角色扮演平台：多角色卡、分层记忆、独立知识库（向量�
 - **实时推送**（v0.4.0）：WebSocket `/api/v1/ws` 按角色/会话订阅心跳事件；前端断线指数退避重连；聊天页实时呈现「主动开口 / 内心独白」气泡。
 - **心跳面板**（v0.4.0）：`/heartbeat` 配置 / 运行记录 / 试跑（试跑不改排程、计入当日次数）；记忆页提供「内心活动时间线」。
 - **QQ 群聊接入**（v0.5.0）：NapCat / OneBot 11 反向 WebSocket；群 ↔ 角色绑定，每群一条独立会话；支持仅 @、关键词、概率闲聊、全量四种触发方式；冷却、每小时/每日上限、消息防抖合并；群成员标签与关系备注注入上下文；心跳主动消息可投递到绑定群；管理面板 `/qq`。
+- **插件化**（v0.5.1）：仓库根 `plugins/` 插件目录，插件自含路由与生命周期（start/stop）；QQ 已整体迁移为 `plugins/qq` 插件（`app/services/qq_service.py` 保留兼容导入）；启用列表由 `.env` 的 `ENABLED_PLUGINS` 控制；插件内置 NapCat 反向 WS 服务端与 OneBot action 客户端，并可代写 NapCat 的 `onebot11.json`。
 - **模型配置**：Provider 管理（OpenAI 兼容 / Ollama）+ 功能位路由（聊天 / 嵌入 / 心跳等不同功能用不同模型/端点，心跳未绑定回落聊天）+ 嵌入模型独立配置（DeepSeek 无 embeddings）。
 
 ## 项目结构
@@ -26,16 +27,19 @@ ChatPhantasm/
 │   │   ├── main.py            # FastAPI 入口（lifespan：建表/seed/启动记忆、知识库与心跳 worker）
 │   │   ├── config.py          # pydantic-settings（.env 唯一密钥来源）
 │   │   ├── db/                # SQLAlchemy async 模型与会话
-│   │   ├── api/v1/            # chat / characters / conversations / providers / memory / kb / heartbeat / qq / ws
-│   │   ├── services/          # 编排：chat / character / provider / memory / vector / kb / heartbeat / qq / ws
+│   │   ├── api/v1/            # chat / characters / conversations / providers / memory / kb / heartbeat / ws
+│   │   ├── services/          # 编排：chat / character / provider / memory / vector / kb / heartbeat / ws（qq_service 为插件兼容层）
+│   │   ├── plugin_system.py   # 插件注册表：扫描 plugins/，挂载路由与 start/stop 生命周期
 │   │   ├── memory/            # 记忆算法：retriever / extractor / summarizer / sanitize / tokens / monologue / proactive
 │   │   ├── rag/               # 向量库抽象与 Chroma 服务模式实现
 │   │   ├── providers/         # LLM 抽象：openai_compat + ollama
 │   │   ├── schemas/           # Pydantic DTO
 │   │   ├── seed.py            # 幂等种子数据（影子角色 + provider + 功能位路由）
 │   │   └── cli.py             # 终端入口（python -m app.cli）
-│   ├── alembic/               # 迁移：0001 P0 / 0002 P1 / 0003 P2 知识库 / 0004 P3 心跳 / 0005 试跑标记
+│   ├── alembic/               # 迁移：0001 P0 / 0002 P1 / 0003 P2 知识库 / 0004 P3 心跳 / 0005 试跑标记 / 0006 QQ 表
 │   └── pyproject.toml
+├── plugins/                   # 插件目录：每个子目录一个插件（导出 plugin 实例）
+│   └── qq/                    # QQ 群聊插件（service 协议/频率控制 + api 路由/WS + schemas）
 ├── frontend/
 │   └── src/                   # Vue3 + Vite + TS + Pinia + Router
 │       ├── views/             # Chat / Characters / CharacterEdit / MemoryManager / Knowledge / Heartbeat / Qq / Settings
@@ -71,12 +75,22 @@ python -m app.cli
 
 ### QQ 群聊（NapCat）
 
+QQ 接入是 `plugins/qq` 插件（插件系统见下文）。插件内置 OneBot 11 反向 WebSocket 服务端与 action 客户端；NapCat 本体（注入 QQ 客户端的运行时）仍是外部进程。
+
 1. 启动后端（默认 `http://127.0.0.1:8000`），在 `.env` 可选设置 `QQ_TOKEN`（与 NapCat 的 token 一致；留空表示不校验）。
-2. 启动 `NapCat.Shell` 并登录 QQ。仓库已提供 `NapCat.Shell/config/onebot11.json` 模板：反向 WebSocket 指向 `ws://127.0.0.1:8000/api/v1/qq/ws`。若 NapCat 已生成 `onebot11_<QQ号>.json`，请在 WebUI「网络配置」中手动添加同样的 WebSocket 客户端（消息格式 `array`）。
+2. 启动 `NapCat.Shell` 并登录 QQ。仓库已提供 `NapCat.Shell/config/onebot11.json` 模板：反向 WebSocket 指向 `ws://127.0.0.1:8000/api/v1/qq/ws`。也可以在 `.env` 设 `NAPCAT_SHELL_DIR` 后调用 `POST /api/v1/qq/napcat/config` 让插件代写该配置。若 NapCat 已生成 `onebot11_<QQ号>.json`，请在 WebUI「网络配置」中手动添加同样的 WebSocket 客户端（消息格式 `array`）。
 3. 打开前端「QQ 群聊」页：新增绑定，选择角色、填写群号（可点「群列表」从已连接账号拉取）、设置触发方式与频率。
 4. 群成员首次发言后会自动出现在「群成员标签」表；可设置标签（如 `朋友`、`管理员`）与关系备注，或勾选「忽略」。
 5. 群内所有消息都会写入该绑定专属会话，可在「对话」页查看；机器人回复由 @ / 关键词 / 概率触发，并受冷却与每小时/每日上限约束。
 6. 若希望心跳「主动消息」也发到群里：在绑定中勾选「允许心跳主动消息发到此群」，并在心跳面板启用 `proactive`。每轮心跳只投递到角色最近活跃的绑定群，避免多群同时刷屏。
+
+### 插件系统
+
+- 插件目录：仓库根 `plugins/`，每个子目录一个插件包，必须导出 `plugin`（`app.plugin_system.Plugin` 实例，含 `name`、可选 `router`、`start()`/`stop()`）。
+- 插件路由由 `main.py` 统一挂载到 `/api/v1` 前缀下；生命周期钩子在 lifespan 中调用。
+- 启用控制：`.env` 的 `ENABLED_PLUGINS`（逗号分隔，默认 `qq`；留空=全部加载）。
+- 插件自建数据表需注册到 `app.db.base.Base.metadata` 并提供 Alembic 迁移（迁移不可依赖运行时开关）；QQ 插件的表仍位于 `backend/app/db/models.py`，迁移 0006。
+- 兼容层：`app.services.qq_service` 与 `app.schemas.qq` 仍可导入（转发到 `plugins.qq`），旧代码/测试无需改动。
 
 ## Docker 部署
 
@@ -131,6 +145,7 @@ docker compose up -d --build
 | GET | /qq/bindings/{id}/replies | 最近机器人发言记录 |
 | POST | /qq/bindings/{id}/send | 发送测试消息 |
 | WS | /qq/ws | NapCat OneBot 11 反向 WebSocket（支持 Authorization Bearer token） |
+| GET/POST | /qq/napcat/info、/qq/napcat/config | NapCat 连接信息 / 代写 onebot11.json（需 NAPCAT_SHELL_DIR） |
 | GET | /health | 健康检查 |
 
 ## 技术栈
@@ -144,4 +159,4 @@ docker compose up -d --build
 
 ## 演进路线
 
-P0 骨架 ✅ → P1 分层记忆 ✅ → P2 向量记忆与知识库 ✅ → P3 心跳 / 内心独白 / 主动消息 ✅（v0.4.0）→ QQ 群聊接入 ✅（v0.5.0）→ P4 角色卡 Schema 兼容 → P5 发布。
+P0 骨架 ✅ → P1 分层记忆 ✅ → P2 向量记忆与知识库 ✅ → P3 心跳 / 内心独白 / 主动消息 ✅（v0.4.0）→ QQ 群聊接入 ✅（v0.5.0）→ 插件化 ✅（v0.5.1）→ P4 角色卡 Schema 兼容 → P5 发布。

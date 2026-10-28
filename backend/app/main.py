@@ -7,12 +7,16 @@ from fastapi.responses import FileResponse
 from .api.v1.router import api_router
 from .config import ROOT_DIR, settings
 from .db.session import init_db
+from .plugin_system import load_all as load_plugins
+from .plugin_system import start_all as start_plugins
+from .plugin_system import stop_all as stop_plugins
 from .seed import seed_defaults
-from .services import heartbeat_service, kb_service, memory_service, qq_service
+from .services import heartbeat_service, kb_service, memory_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await start_plugins()
     if settings.db_auto_create:
         await init_db()
     await seed_defaults()
@@ -25,10 +29,10 @@ async def lifespan(app: FastAPI):
         await memory_service.stop_worker(worker)
         await kb_service.stop_worker(kb_worker)
         await heartbeat_service.stop_worker(heartbeat_worker)
-        await qq_service.bridge.shutdown()
+        await stop_plugins()
 
 
-app = FastAPI(title="ChatPhantasm", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="ChatPhantasm", version="0.5.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +43,11 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+# 插件路由（QQ 等）：挂载到同一 /api/v1 命名空间
+for _plugin in load_plugins().values():
+    if _plugin.router is not None:
+        app.include_router(_plugin.router, prefix="/api/v1")
 
 
 @app.middleware("http")

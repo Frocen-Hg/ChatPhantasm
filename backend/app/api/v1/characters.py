@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.models import Character, QqBinding
 from ...db.session import get_db
+from ...plugin_system import get_plugin
 from ...schemas.character import CharacterCreate, CharacterUpdate
-from ...services import character_service, qq_service
+from ...services import character_service
 
 router = APIRouter(prefix="/characters", tags=["characters"])
 
@@ -62,7 +63,10 @@ async def delete_character(character_id: int, db: AsyncSession = Depends(get_db)
     binding_ids = (
         await db.execute(select(QqBinding.id).where(QqBinding.character_id == character_id))
     ).scalars().all()
+    qq_plugin = get_plugin("qq")
+    bridge = getattr(qq_plugin, "bridge", None) if qq_plugin is not None else None
     for binding_id in binding_ids:
-        qq_service.bridge.forget_binding(binding_id)
+        if bridge is not None:
+            bridge.forget_binding(binding_id)
     await character_service.delete_character(db, character)
     return {"ok": True}

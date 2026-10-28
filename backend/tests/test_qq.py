@@ -15,7 +15,8 @@ import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # 仓库根（plugins 包）
 
 _tmp = tempfile.TemporaryDirectory()
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(Path(_tmp.name) / 'qq.db').as_posix()}"
@@ -32,8 +33,8 @@ try:
         QqReplyLog,
     )
     from app.db.session import SessionLocal, engine, init_db  # noqa: E402
-    from app.services import qq_service  # noqa: E402
-    from app.services.qq_service import (  # noqa: E402
+    from plugins.qq import service as qq_service  # noqa: E402
+    from plugins.qq.service import (  # noqa: E402
         IncomingMessage,
         ParsedEvent,
         choose_trigger,
